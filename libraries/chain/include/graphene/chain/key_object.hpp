@@ -20,8 +20,12 @@
 #include <graphene/chain/address.hpp>
 #include <fc/static_variant.hpp>
 #include <graphene/chain/types.hpp>
+#include <graphene/db/generic_index.hpp>
+#include <boost/multi_index/composite_key.hpp>
 
 namespace graphene { namespace chain {
+   typedef  static_variant<address,public_key_type> address_or_key;
+
    /**
     * @class key_object
     * @brief maps an ID to a public key or address
@@ -38,8 +42,26 @@ namespace graphene { namespace chain {
          address key_address()const;
          const public_key_type& key()const { return key_data.get<public_key_type>(); }
 
-         static_variant<address,public_key_type> key_data;
+         address_or_key key_data;
    };
+
+   struct by_address;
+
+   /**
+    * @ingroup object_index
+    */
+   typedef multi_index_container<
+      key_object,
+      indexed_by<
+         hashed_unique< tag<by_id>, member< object, object_id_type, &object::id > >,
+         hashed_non_unique< tag<by_address>, const_mem_fun<key_object, address, &key_object::key_address> >
+      >
+   > key_multi_index_type;
+   /**
+    * @ingroup object_index
+    */
+   typedef generic_index<key_object, key_multi_index_type> key_index;
 } }
 
+FC_REFLECT_TYPENAME( graphene::chain::address_or_key )
 FC_REFLECT_DERIVED( graphene::chain::key_object, (graphene::db::object), (key_data) )

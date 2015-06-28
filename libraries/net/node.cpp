@@ -400,7 +400,7 @@ namespace graphene { namespace net { namespace detail {
       fc::sha256           _chain_id;
 
 #define NODE_CONFIGURATION_FILENAME      "node_config.json"
-#define POTENTIAL_PEER_DATABASE_FILENAME "peers.leveldb"
+#define POTENTIAL_PEER_DATABASE_FILENAME "peers.json"
       fc::path             _node_configuration_directory;
       node_configuration   _node_configuration;
 
@@ -1525,7 +1525,7 @@ namespace graphene { namespace net { namespace detail {
       else
         dlog("delayed_peer_deletion_task is already scheduled (current size of _peers_to_delete is ${size})", ("size", number_of_peers_to_delete));
 #else
-      dlog("scheduling peer for deletion: ${peer} (this will not block)");
+      dlog("scheduling peer for deletion: ${peer} (this will not block)", ("peer", peer_to_delete->get_remote_endpoint()));
       _peers_to_delete.push_back(peer_to_delete);
       if (!_node_is_shutting_down &&
           (!_delayed_peer_deletion_task_done.valid() || _delayed_peer_deletion_task_done.ready()))
@@ -3596,6 +3596,19 @@ namespace graphene { namespace net { namespace detail {
     {
       VERIFY_CORRECT_THREAD();
 
+      try
+      {
+        _potential_peer_db.close();
+      }
+      catch ( const fc::exception& e )
+      {
+        wlog( "Exception thrown while closing P2P peer database, ignoring: ${e}", ("e",e) );
+      }
+      catch (...)
+      {
+        wlog( "Exception thrown while closing P2P peer database, ignoring" );
+      }
+
       // First, stop accepting incoming network connections
       try
       {
@@ -4930,9 +4943,7 @@ namespace graphene { namespace net { namespace detail {
 
   void node::close()
   {
-    wlog( ".... WARNING NOT DOING ANYTHING WHEN I SHOULD ......" );
-    return;
-    my->close();
+    INVOKE_IN_IMPL(close);
   }
 
   struct simulated_network::node_info
@@ -5029,7 +5040,44 @@ namespace graphene { namespace net { namespace detail {
       return statistics;
     }
 
-#define INVOKE_AND_COLLECT_STATISTICS(method_name, ...) \
+// define VERBOSE_NODE_DELEGATE_LOGGING to log whenever the node delegate throws exceptions
+//#define VERBOSE_NODE_DELEGATE_LOGGING
+#ifdef VERBOSE_NODE_DELEGATE_LOGGING
+#  define INVOKE_AND_COLLECT_STATISTICS(method_name, ...) \
+    try \
+    { \
+      call_statistics_collector statistics_collector(#method_name, \
+                                                     &_ ## method_name ## _execution_accumulator, \
+                                                     &_ ## method_name ## _delay_before_accumulator, \
+                                                     &_ ## method_name ## _delay_after_accumulator); \
+      if (_thread->is_current()) \
+      { \
+        call_statistics_collector::actual_execution_measurement_helper helper(statistics_collector); \
+        return _node_delegate->method_name(__VA_ARGS__); \
+      } \
+      else \
+        return _thread->async([&](){ \
+          call_statistics_collector::actual_execution_measurement_helper helper(statistics_collector); \
+          return _node_delegate->method_name(__VA_ARGS__); \
+        }, "invoke " BOOST_STRINGIZE(method_name)).wait(); \
+    } \
+    catch (const fc::exception& e) \
+    { \
+      dlog("node_delegate threw fc::exception: ${e}", ("e", e)); \
+      throw; \
+    } \
+    catch (const std::exception& e) \
+    { \
+      dlog("node_delegate threw std::exception: ${e}", ("e", e.what())); \
+      throw; \
+    } \
+    catch (...) \
+    { \
+      dlog("node_delegate threw unrecognized exception"); \
+      throw; \
+    }
+#else
+#  define INVOKE_AND_COLLECT_STATISTICS(method_name, ...) \
     call_statistics_collector statistics_collector(#method_name, \
                                                    &_ ## method_name ## _execution_accumulator, \
                                                    &_ ## method_name ## _delay_before_accumulator, \
@@ -5044,6 +5092,7 @@ namespace graphene { namespace net { namespace detail {
         call_statistics_collector::actual_execution_measurement_helper helper(statistics_collector); \
         return _node_delegate->method_name(__VA_ARGS__); \
       }, "invoke " BOOST_STRINGIZE(method_name)).wait()
+#endif
 
     bool statistics_gathering_node_delegate_wrapper::has_item( const net::item_id& id )
     {

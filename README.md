@@ -6,6 +6,11 @@ This is a quick introduction to get new developers up to speed on Graphene.
 Starting Graphene
 -----------------
 
+For Ubuntu 14.04 LTS users, see this link first:
+    https://github.com/cryptonomex/graphene/wiki/build-ubuntu
+    
+and then proceed with:
+
     git clone https://github.com/cryptonomex/graphene.git
     cd graphene
     git submodule update --init --recursive
@@ -33,7 +38,31 @@ A list of CLI wallet commands is available [here](https://bitshares.github.io/do
 Code coverage testing
 ---------------------
 
-TODO:  Write something here
+Check how much code is covered by unit tests, using gcov/lcov (see http://ltp.sourceforge.net/coverage/lcov.php ).
+
+    cmake -D ENABLE_COVERAGE_TESTING=true -D CMAKE_BUILD_TYPE=Debug .
+    make
+    lcov --capture --initial --directory . --output-file base.info --no-external
+    libraries/fc/bloom_test
+    libraries/fc/task_cancel_test
+    libraries/fc/api
+    libraries/fc/blind
+    libraries/fc/ecc_test test
+    libraries/fc/real128_test
+    libraries/fc/lzma_test README.md
+    libraries/fc/ntp_test
+    tests/intense_test
+    tests/app_test
+    tests/chain_bench
+    tests/chain_test
+    tests/performance_test
+    lcov --capture --directory . --output-file test.info --no-external
+    lcov --add-tracefile base.info --add-tracefile test.info --output-file total.info
+    lcov -o interesting.info -r total.info libraries/fc/vendor/\* libraries/fc/tests/\* tests/\*
+    mkdir -p lcov
+    genhtml interesting.info --output-directory lcov --prefix `pwd`
+
+Now open `lcov/index.html` in a browser.
 
 Unit testing
 ------------
@@ -46,7 +75,7 @@ Witness node
 
 The role of the witness node is to broadcast transactions, download blocks, and optionally sign them.
 
-./witness_node --rpc-endpoint "127.0.0.1:8090" --enable-stale-production  -w \""1.7.0"\" \""1.7.1"\" \""1.7.2"\" \""1.7.3"\" \""1.7.4"\" --private-key "[\"1.2.0\",\"aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e\"]"
+./witness_node --rpc-endpoint "127.0.0.1:8090" --enable-stale-production -w \""1.7.0"\" \""1.7.1"\" \""1.7.2"\" \""1.7.3"\" \""1.7.4"\" --private-key "[\"1.2.0\",\"d2653ff7cbb2d8ff129ac27ef5781ce68b2558c41a74af1f2ddca635cbeef07d\"]"
 
 Running specific tests
 ----------------------

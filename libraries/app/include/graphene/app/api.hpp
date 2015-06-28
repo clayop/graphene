@@ -22,13 +22,22 @@
 #include <graphene/chain/operation_history_object.hpp>
 #include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/limit_order_object.hpp>
-#include <graphene/chain/short_order_object.hpp>
+#include <graphene/chain/call_order_object.hpp>
 #include <graphene/chain/key_object.hpp>
+#include <graphene/chain/delegate_object.hpp>
+#include <graphene/chain/witness_object.hpp>
+#include <graphene/chain/proposal_object.hpp>
+#include <graphene/chain/balance_object.hpp>
 #include <graphene/net/node.hpp>
+
+
+#include <graphene/market_history/market_history_plugin.hpp>
+
 #include <fc/api.hpp>
 
 namespace graphene { namespace app {
    using namespace graphene::chain;
+   using namespace graphene::market_history;
 
    class application;
 
@@ -143,13 +152,6 @@ namespace graphene { namespace app {
           */
          vector<limit_order_object> get_limit_orders(asset_id_type a, asset_id_type b, uint32_t limit)const;
          /**
-          * @brief Get short orders in a given asset
-          * @param a ID of asset being sold
-          * @param limit Maximum number of orders to retrieve
-          * @return The short orders, ordered from least price to greatest
-          */
-         vector<short_order_object> get_short_orders(asset_id_type a, uint32_t limit)const;
-         /**
           * @brief Get call orders in a given asset
           * @param a ID of asset being called
           * @param limit Maximum number of orders to retrieve
@@ -171,6 +173,19 @@ namespace graphene { namespace app {
           * @return The assets found
           */
          vector<asset_object> list_assets(const string& lower_bound_symbol, uint32_t limit)const;
+
+         /**
+          * @brief Get the delegate owned by a given account
+          * @param account The ID of the account whose delegate should be retrieved
+          * @return The delegate object, or null if the account does not have a delegate
+          */
+         fc::optional<delegate_object> get_delegate_by_account(account_id_type account)const;
+         /**
+          * @brief Get the witness owned by a given account
+          * @param account The ID of the account whose witness should be retrieved
+          * @return The witness object, or null if the account does not have a witness
+          */
+         fc::optional<witness_object> get_witness_by_account(account_id_type account)const;
 
          /**
           * @group Push Notification Methods
@@ -217,6 +232,30 @@ namespace graphene { namespace app {
 
          /// @brief Get a hexdump of the serialized binary form of a transaction
          std::string get_transaction_hex(const signed_transaction& trx)const;
+
+         /**
+          *  @return the set of proposed transactions relevant to the specified account id.
+          */
+         vector<proposal_object> get_proposed_transactions( account_id_type id )const;
+
+         /**
+          *  @return all accounts that referr to the key or account id in their owner or active authorities.
+          */
+         vector<account_id_type> get_account_references( object_id_type key_or_account_id )const;
+
+         /**
+          *  @return all key_ids that have been registered for a given address. 
+          */
+         vector<key_id_type>  get_keys_for_address( const address& a )const;
+
+         /**
+          *  @return all open margin positions for a given account id.
+          */
+         vector<call_order_object> get_margin_positions( const account_id_type& id )const;
+
+         /** @return all unclaimed balance objects for a set of addresses */
+         vector<balance_object>  get_balance_objects( const vector<address>& addrs )const;
+
       private:
          /** called every time a block is applied to report the objects that were changed */
          void on_objects_changed(const vector<object_id_type>& ids);
@@ -237,24 +276,27 @@ namespace graphene { namespace app {
     */
    class history_api
    {
-   public:
-      history_api(application& app):_app(app){}
+      public:
+         history_api(application& app):_app(app){}
 
-      /**
-       * @brief Get operations relevant to the specificed account
-       * @param account The account whose history should be queried
-       * @param stop ID of the earliest operation to retrieve
-       * @param limit Maximum number of operations to retrieve (must not exceed 100)
-       * @param start ID of the most recent operation to retrieve
-       * @return A list of operations performed by account, ordered from most recent to oldest.
-       */
-      vector<operation_history_object> get_account_history(account_id_type account,
-                                                           operation_history_id_type stop = operation_history_id_type(),
-                                                           int limit = 100,
-                                                           operation_history_id_type start = operation_history_id_type())const;
+         /**
+          * @brief Get operations relevant to the specificed account
+          * @param account The account whose history should be queried
+          * @param stop ID of the earliest operation to retrieve
+          * @param limit Maximum number of operations to retrieve (must not exceed 100)
+          * @param start ID of the most recent operation to retrieve
+          * @return A list of operations performed by account, ordered from most recent to oldest.
+          */
+         vector<operation_history_object> get_account_history(account_id_type account,
+                                                              operation_history_id_type stop = operation_history_id_type(),
+                                                              int limit = 100,
+                                                              operation_history_id_type start = operation_history_id_type())const;
 
-   private:
-        application&              _app;
+         vector<bucket_object> get_market_history( asset_id_type a, asset_id_type b, uint32_t bucket_seconds, 
+                                                   fc::time_point_sec start, fc::time_point_sec end )const;
+         flat_set<uint32_t>    get_market_history_buckets()const;
+      private:
+           application&              _app;
    };
 
    /**
@@ -342,18 +384,24 @@ FC_API(graphene::app::database_api,
        (get_named_account_balances)
        (lookup_asset_symbols)
        (get_limit_orders)
-       (get_short_orders)
        (get_call_orders)
        (get_settle_orders)
        (list_assets)
+       (get_delegate_by_account)
+       (get_witness_by_account)
        (subscribe_to_objects)
        (unsubscribe_from_objects)
        (subscribe_to_market)
        (unsubscribe_from_market)
        (cancel_all_subscriptions)
        (get_transaction_hex)
+       (get_proposed_transactions)
+       (get_account_references)
+       (get_keys_for_address)
+       (get_margin_positions)
+       (get_balance_objects)
      )
-FC_API(graphene::app::history_api, (get_account_history))
+FC_API(graphene::app::history_api, (get_account_history)(get_market_history)(get_market_history_buckets))
 FC_API(graphene::app::network_api, (broadcast_transaction)(add_node)(get_connected_peers))
 FC_API(graphene::app::login_api,
        (login)

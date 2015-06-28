@@ -16,6 +16,8 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include <graphene/chain/asset_object.hpp>
+#include <graphene/chain/database.hpp>
+#include <graphene/chain/limit_order_object.hpp>
 
 #include <fc/uint128.hpp>
 
@@ -85,7 +87,6 @@ void asset_object::asset_options::validate()const
    FC_ASSERT( max_supply <= GRAPHENE_MAX_SHARE_SUPPLY );
    FC_ASSERT( market_fee_percent <= GRAPHENE_100_PERCENT );
    FC_ASSERT( max_market_fee >= 0 && max_market_fee <= GRAPHENE_MAX_SHARE_SUPPLY );
-   FC_ASSERT( min_market_fee >= 0 && min_market_fee <= GRAPHENE_MAX_SHARE_SUPPLY );
    // There must be no high bits in permissions whose meaning is not known.
    FC_ASSERT( !(issuer_permissions & ~ASSET_ISSUER_PERMISSION_MASK) );
    // There must be no high bits in flags which are not also high in permissions.
@@ -113,7 +114,6 @@ void asset_object::bitasset_options::validate() const
    FC_ASSERT(force_settlement_offset_percent <= GRAPHENE_100_PERCENT);
    FC_ASSERT(maximum_force_settlement_volume <= GRAPHENE_100_PERCENT);
 }
-
 
 asset asset_object::amount_from_string(string amount_string) const
 { try {

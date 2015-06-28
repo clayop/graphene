@@ -41,6 +41,15 @@ using namespace graphene::db;
 
 BOOST_FIXTURE_TEST_SUITE( basic_tests, database_fixture )
 
+/** verify that names are 
+ * https://github.com/cryptonomex/graphene/issues/15
+ */
+BOOST_AUTO_TEST_CASE( valid_name_test )
+{
+   BOOST_REQUIRE( is_valid_name( "aaa-bbb-1" ) );
+   BOOST_REQUIRE( !is_valid_name( "1aaa-bbb" ) );
+}
+
 BOOST_AUTO_TEST_CASE( price_test )
 {
     BOOST_CHECK( price::max(0,1) > price::min(0,1) );
@@ -62,6 +71,20 @@ BOOST_AUTO_TEST_CASE( price_test )
     BOOST_CHECK( ~price::min(0,1) == price::max(1,0) );
     BOOST_CHECK( ~price::max(0,1) < ~price::min(0,1) );
     BOOST_CHECK( ~price::max(0,1) <= ~price::min(0,1) );
+    price a(asset(1), asset(2,1));
+    price b(asset(2), asset(2,1));
+    price c(asset(1), asset(2,1));
+    BOOST_CHECK(a < b);
+    BOOST_CHECK(b > a);
+    BOOST_CHECK(a == c);
+    BOOST_CHECK(!(b == c));
+
+    price_feed dummy;
+    dummy.maintenance_collateral_ratio = 1002;
+    dummy.maximum_short_squeeze_ratio = 1234;
+    dummy.settlement_price = price(asset(1000), asset(2000, 1));
+    price_feed dummy2 = dummy;
+    BOOST_CHECK(dummy == dummy2);
 }
 
 BOOST_AUTO_TEST_CASE( serialization_tests )
@@ -213,6 +236,19 @@ BOOST_AUTO_TEST_CASE( witness_rng_test_bits )
       }
 
    } FC_LOG_AND_RETHROW()
+}
+
+BOOST_AUTO_TEST_CASE( data_fees )
+{
+   fee_schedule_type fs;
+   fs.data_fee = 10;
+   int x = 1489520937;
+   BOOST_CHECK_EQUAL(fs.total_data_fee(), 0);
+   BOOST_CHECK_EQUAL(fs.total_data_fee(fs), 0);
+   BOOST_CHECK_EQUAL(fs.total_data_fee(fs.key_create_fee), 0);
+   BOOST_CHECK_EQUAL(fs.total_data_fee(x, fs, authority()), 0);
+   auto keys = vector<private_key_type>(100, private_key_type::generate());
+   BOOST_CHECK_EQUAL(fs.total_data_fee(keys, x), (fc::raw::pack_size(keys) + fc::raw::pack_size(x)) / 1024 * 10);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

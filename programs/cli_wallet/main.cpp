@@ -88,7 +88,6 @@ int main( int argc, char** argv )
       ac.rotate               = true;
       ac.rotation_interval    = fc::hours( 1 );
       ac.rotation_limit       = fc::days( 1 );
-      ac.rotation_compression = false;
 
       std::cout << "Logging RPC to file: " << (data_dir / ac.filename).preferred_string() << "\n";
 
@@ -103,7 +102,7 @@ int main( int argc, char** argv )
 
       //fc::configure_logging( cfg );
 
-      fc::ecc::private_key genesis_private_key = fc::ecc::private_key::regenerate(fc::sha256::hash(string("genesis")));
+      fc::ecc::private_key genesis_private_key = fc::ecc::private_key::regenerate(fc::sha256::hash(string("null_key")));
 
       idump( (key_to_wif( genesis_private_key ) ) );
 
@@ -146,9 +145,9 @@ int main( int argc, char** argv )
       for( auto& name_formatter : wapiptr->get_result_formatters() )
          wallet_cli->format_result( name_formatter.first, name_formatter.second );
 
-      boost::signals2::scoped_connection closed_connection = con->closed.connect([]{
+      boost::signals2::scoped_connection closed_connection(con->closed.connect([]{
          cerr << "Server has disconnected us.\n";
-      });
+      }));
       (void)(closed_connection);
 
       if( wapiptr->is_new() )
@@ -158,9 +157,9 @@ int main( int argc, char** argv )
       } else
          wallet_cli->set_prompt( "locked >>> " );
 
-      boost::signals2::scoped_connection locked_connection = wapiptr->lock_changed.connect([&](bool locked) {
+      boost::signals2::scoped_connection locked_connection(wapiptr->lock_changed.connect([&](bool locked) {
          wallet_cli->set_prompt(  locked ? "locked >>> " : "unlocked >>> " );
-      });
+      }));
 
       auto _websocket_server = std::make_shared<fc::http::websocket_server>();
       if( options.count("rpc-endpoint") )
@@ -220,6 +219,7 @@ int main( int argc, char** argv )
    catch ( const fc::exception& e )
    {
       std::cout << e.to_detail_string() << "\n";
+      return -1;
    }
-   return -1;
+   return 0;
 }

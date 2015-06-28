@@ -50,6 +50,8 @@ using chain::block_id_type;
 
 using std::vector;
 
+namespace bpo = boost::program_options;
+
 namespace detail {
 
    class application_impl : public net::node_delegate
@@ -149,9 +151,24 @@ namespace detail {
          fc::create_directories(_data_dir / "blockchain/dblock");
 
          auto nathan_key = fc::ecc::private_key::regenerate(fc::sha256::hash(string("nathan")));
-         genesis_allocation initial_allocation = {{graphene::chain::public_key_type(nathan_key.get_public_key()), 1}};
+         genesis_state_type initial_state;
+         fc::reflector<fee_schedule_type>::visit(
+                  fee_schedule_type::fee_set_visitor{initial_state.initial_parameters.current_fees, 0});
+         secret_hash_type::encoder enc;
+         fc::raw::pack(enc, nathan_key);
+         fc::raw::pack(enc, secret_hash_type());
+         auto secret = secret_hash_type::hash(enc.result());
+         for( int i = 0; i < 10; ++i )
+         {
+            auto name = "init"+fc::to_string(i);
+            initial_state.allocation_targets.emplace_back(name, nathan_key.get_public_key(), 0, true);
+            initial_state.initial_committee.push_back({name});
+            initial_state.initial_witnesses.push_back({name, nathan_key.get_public_key(), secret});
+         }
+
+         initial_state.allocation_targets.emplace_back("nathan", address(public_key_type(nathan_key.get_public_key())), 1);
          if( _options->count("genesis-json") )
-            initial_allocation = fc::json::from_file(_options->at("genesis-json").as<boost::filesystem::path>()).as<genesis_allocation>();
+            initial_state = fc::json::from_file(_options->at("genesis-json").as<boost::filesystem::path>()).as<genesis_state_type>();
          else
             dlog("Allocating all stake to ${key}", ("key", utilities::key_to_wif(nathan_key)));
 
@@ -161,12 +178,12 @@ namespace detail {
          if( _options->count("replay-blockchain") )
          {
             ilog("Replaying blockchain on user request.");
-            _chain_db->reindex(_data_dir/"blockchain", initial_allocation);
+            _chain_db->reindex(_data_dir/"blockchain", initial_state);
          } else if( clean )
-            _chain_db->open(_data_dir / "blockchain", initial_allocation);
+            _chain_db->open(_data_dir / "blockchain", initial_state);
          else {
             wlog("Detected unclean shutdown. Replaying blockchain...");
-            _chain_db->reindex(_data_dir / "blockchain", initial_allocation);
+            _chain_db->reindex(_data_dir / "blockchain", initial_state);
          }
 
          reset_p2p_node(_data_dir);
@@ -178,16 +195,27 @@ namespace detail {
        * If delegate has the item, the network has no need to fetch it.
        */
       virtual bool has_item( const net::item_id& id ) override
-      { try {
-          if( id.item_type == graphene::net::block_message_type )
-          {
-             return _chain_db->is_known_block( id.item_hash );
-          }
-          else
-          {
-             return _chain_db->is_known_transaction( id.item_hash );
-          }
-      } FC_CAPTURE_AND_RETHROW( (id) ) }
+      { 
+         try 
+         {
+            if( id.item_type == graphene::net::block_message_type )
+            {
+               // for some reason, the contains() function called by is_known_block
+               // throws when the block is not present (instead of returning false)
+               try
+               {
+                  return _chain_db->is_known_block( id.item_hash );
+               }
+               catch (const fc::key_not_found_exception&)
+               {
+                  return false;
+               }
+            }
+            else
+               return _chain_db->is_known_transaction( id.item_hash ); // is_known_transaction behaves normally
+         } 
+         FC_CAPTURE_AND_RETHROW( (id) ) 
+      }
 
       /**
        * @brief allows the application to validate an item prior to broadcasting to peers.
@@ -399,13 +427,13 @@ application::~application()
 {
    if( my->_p2p_network )
    {
-      ilog("Closing p2p node");
+      //ilog("Closing p2p node");
       my->_p2p_network->close();
       my->_p2p_network.reset();
    }
    if( my->_chain_db )
    {
-      ilog("Closing chain database");
+      //ilog("Closing chain database");
       my->_chain_db->close();
    }
 }

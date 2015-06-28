@@ -16,43 +16,25 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #pragma once
+#include <graphene/chain/evaluator.hpp>
+#include <graphene/chain/operations.hpp>
+#include <graphene/chain/database.hpp>
 
 namespace graphene { namespace chain {
 
-   /**
-    * @class blinded_balance_object
-    * @brief tracks a blinded balance commitment
-    * @ingroup object
-    * @ingroup protocol
-    */
-   class blinded_balance_object : public graphene::db::abstract_object<blinded_balance_object>
+   class call_order_update_evaluator : public evaluator<call_order_update_evaluator>
    {
       public:
-         static const uint8_t space_id = protocol_ids;
-         static const uint8_t type_id  = blinded_balance_object_type;
+         typedef call_order_update_operation operation_type;
 
-         fc::ecc::commitment_type                commitment;
-         asset_id_type                           asset_id;
-         static_variant<address,account_id_type> owner;
+         void_result do_evaluate( const call_order_update_operation& o );
+         void_result do_apply( const call_order_update_operation& o );
+
+         bool _closing_order = false;
+         const asset_object* _debt_asset = nullptr;
+         const account_object* _paying_account = nullptr;
+         const call_order_object* _order = nullptr;
+         const asset_bitasset_data_object* _bitasset_data = nullptr;
    };
 
-   struct by_asset;
-   struct by_owner;
-   struct by_commitment;
-
-   /**
-    * @ingroup object_index
-    */
-   typedef multi_index_container<
-      blinded_balance_object,
-      indexed_by<
-         ordered_unique< tag<by_id>, member< object, object_id_type, &object::id > >,
-         hashed_unique< tag<by_commitment>, member<blinded_balance_object, commitment_type, &blinded_balance_object::commitment> >
-      >
-   > blinded_balance_object_multi_index_type;
-   typedef generic_index<blinded_balance_object, blinded_balance_object_multi_index_type> balance_index;
-
-
 } } // graphene::chain
-
-FC_REFLECT( graphene::chain::blinded_balance_object, (commitment)(asset_id)(last_update_block_num)(owner) )

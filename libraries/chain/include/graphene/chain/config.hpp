@@ -48,23 +48,32 @@
 #define GRAPHENE_INITIAL_SUPPLY                                 GRAPHENE_BLOCKCHAIN_MAX_SHARES
 #define GRAPHENE_DEFAULT_TRANSFER_FEE                           (1*GRAPHENE_BLOCKCHAIN_PRECISION)
 #define GRAPHENE_MAX_INSTANCE_ID                                (uint64_t(-1)>>16)
+/** percentage fields are fixed point with a denominator of 10,000 */
 #define GRAPHENE_100_PERCENT                                    10000
 #define GRAPHENE_1_PERCENT                                      (GRAPHENE_100_PERCENT/100)
 /** NOTE: making this a power of 2 (say 2^15) would greatly accelerate fee calcs */
 #define GRAPHENE_MAX_MARKET_FEE_PERCENT                         GRAPHENE_100_PERCENT
 #define GRAPHENE_DEFAULT_FORCE_SETTLEMENT_DELAY                 (60*60*24) ///< 1 day
 #define GRAPHENE_DEFAULT_FORCE_SETTLEMENT_OFFSET                0 ///< 1%
-#define GRAPHENE_DEFAULT_FORCE_SETTLEMENT_MAX_VOLUME            2000 ///< 20%
+#define GRAPHENE_DEFAULT_FORCE_SETTLEMENT_MAX_VOLUME            (20* GRAPHENE_1_PERCENT) ///< 20%
 #define GRAPHENE_DEFAULT_PRICE_FEED_LIFETIME                    (60*60*24) ///< 1 day
 #define GRAPHENE_MAX_FEED_PRODUCERS                             200
 #define GRAPHENE_DEFAULT_MAX_AUTHORITY_MEMBERSHIP               10
 #define GRAPHENE_DEFAULT_MAX_ASSET_WHITELIST_AUTHORITIES        10
 #define GRAPHENE_DEFAULT_MAX_ASSET_FEED_PUBLISHERS              10
 
-#define GRAPHENE_MIN_COLLATERAL_RATIO                   1001  // lower than this could result in divide by 0
-#define GRAPHENE_MAX_COLLATERAL_RATIO                   32000 // higher than this is unnecessary and may exceed int16 storage
-#define GRAPHENE_DEFAULT_INITIAL_COLLATERAL_RATIO       2000
-#define GRAPHENE_DEFAULT_MAINTENANCE_COLLATERAL_RATIO   1750
+/**
+ *  These ratios are fixed point numbers with a denominator of GRAPHENE_COLLATERAL_RATIO_DENOM, the
+ *  minimum maitenance collateral is therefore 1.001x and the default
+ *  maintenance ratio is 1.75x
+ */
+///@{
+#define GRAPHENE_COLLATERAL_RATIO_DENOM                 1000
+#define GRAPHENE_MIN_COLLATERAL_RATIO                   1001  ///< lower than this could result in divide by 0
+#define GRAPHENE_MAX_COLLATERAL_RATIO                   32000 ///< higher than this is unnecessary and may exceed int16 storage
+#define GRAPHENE_DEFAULT_MAINTENANCE_COLLATERAL_RATIO   1750 ///< Call when collateral only pays off 175% the debt
+#define GRAPHENE_DEFAULT_MAX_SHORT_SQUEEZE_RATIO        1500 ///< Stop calling when collateral only pays off 150% of the debt
+///@}
 #define GRAPHENE_DEFAULT_MARGIN_PERIOD_SEC              (30*60*60*24)
 
 #define GRAPHENE_DEFAULT_NUM_WITNESSES                        (101)
@@ -82,7 +91,15 @@
 #define GRAPHENE_DEFAULT_CASHBACK_VESTING_THRESHOLD           (GRAPHENE_BLOCKCHAIN_PRECISION*int64_t(100))
 #define GRAPHENE_DEFAULT_BURN_PERCENT_OF_FEE                  (20*GRAPHENE_1_PERCENT)
 #define GRAPHENE_WITNESS_PAY_PERCENT_PRECISION                (1000000000)
+#define GRAPHENE_DEFAULT_MAX_ASSERT_OPCODE                    1
+#define GRAPHENE_DEFAULT_FEE_LIQUIDATION_THRESHOLD            GRAPHENE_BLOCKCHAIN_PRECISION * 100;
+#define GRAPHENE_DEFAULT_ACCOUNTS_PER_FEE_SCALE               1000
+#define GRAPHENE_DEFAULT_ACCOUNT_FEE_SCALE_BITSHIFTS          4
 #define GRAPHENE_GENESIS_TIMESTAMP                            (1431700000)  /// Should be divisible by GRAPHENE_DEFAULT_BLOCK_INTERVAL
+
+#define GRAPHENE_MAX_WORKER_NAME_LENGTH                       63
+
+#define GRAPHENE_MAX_URL_LENGTH                               127
 
 // counter initialization values used to derive near and far future seeds for shuffling witnesses
 // we use the fractional bits of sqrt(2) in hex
@@ -112,15 +129,19 @@
 #define GRAPHENE_DEFAULT_WORKER_BUDGET_PER_DAY            (GRAPHENE_BLOCKCHAIN_PRECISION * int64_t(500) * 1000 )
 
 #define GRAPHENE_MAX_INTEREST_APR                            uint16_t( 10000 )
-#define GRAPHENE_LEGACY_NAME_IMPORT_PERIOD                   3000000 /** 3 million blocks */
 
 /**
  *  Reserved Account IDs with special meaning
  */
 ///@{
-#define GRAPHENE_GENESIS_ACCOUNT (graphene::chain::account_id_type(0))
+/// Represents the current committee members, two-week review period (GRAPHENE_DEFAULT_GENESIS_PROPOSAL_REVIEW_PERIOD_SEC)
+#define GRAPHENE_COMMITTEE_ACCOUNT (graphene::chain::account_id_type(0))
+/// Represents the current witnesses
 #define GRAPHENE_WITNESS_ACCOUNT (graphene::chain::account_id_type(1))
-#define GRAPHENE_DELEGATE_ACCOUNT (graphene::chain::account_id_type(2))
+/// Represents the current committee members
+#define GRAPHENE_RELAXED_COMMITTEE_ACCOUNT (graphene::chain::account_id_type(2))
+/// Represents the canonical account with NO authority (nobody can access funds in null account)
 #define GRAPHENE_NULL_ACCOUNT (graphene::chain::account_id_type(3))
+/// Represents the canonical account with WILDCARD authority (anybody can access funds in temp account)
 #define GRAPHENE_TEMP_ACCOUNT (graphene::chain::account_id_type(4))
 ///@}

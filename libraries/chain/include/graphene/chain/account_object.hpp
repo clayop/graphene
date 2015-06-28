@@ -22,6 +22,7 @@
 #include <boost/multi_index/composite_key.hpp>
 
 namespace graphene { namespace chain {
+class database;
 
    /**
     * @class account_statistics_object
@@ -64,8 +65,8 @@ namespace graphene { namespace chain {
           * them yet (registrar, referrer, lifetime referrer, network, etc). This is used as an optimization to avoid
           * doing massive amounts of uint128 arithmetic on each and every operation.
           *
-          *These fees will be paid out as vesting cash-back, and this counter will reset during the maintenance
-          *interval.
+          * These fees will be paid out as vesting cash-back, and this counter will reset during the maintenance
+          * interval.
           */
          share_type pending_fees;
          /**
@@ -76,6 +77,8 @@ namespace graphene { namespace chain {
 
          /// @brief Calculate the percentage discount this user receives on his fees
          uint16_t calculate_bulk_discount_percent(const chain_parameters& params)const;
+         /// @brief Split up and pay out @ref pending_fees and @ref pending_vested_fees
+         void process_fees(const account_object& a, database& d) const;
    };
 
    /**
@@ -141,6 +144,7 @@ namespace graphene { namespace chain {
 
          /// The account's name. This name must be unique among all account names on the graph. May not be empty.
          string name;
+
          /**
           * The owner authority represents absolute control over the account. Usually the keys in this authority will
           * be kept in cold storage, as they should not be needed very often and compromise of these keys constitutes
@@ -151,19 +155,30 @@ namespace graphene { namespace chain {
          /// The owner authority contains the hot keys of the account. This authority has control over nearly all
          /// operations the account may perform.
          authority active;
-         /// The memo key is the key this account will typically use to encrypt/sign transaction memos and other non-
-         /// validated account activities. This field is here to prevent confusion if the active authority has zero or
-         /// multiple keys in it.
-         key_id_type memo_key;
-         /// If this field is set to an account ID other than 0, this account's votes will be ignored and its stake
-         /// will be counted as voting for the referenced account's selected votes instead.
-         account_id_type voting_account;
 
-         uint16_t num_witness = 0;
-         uint16_t num_committee = 0;
-         /// This is the list of vote IDs this account votes for. The weight of these votes is determined by this
-         /// account's balance of core asset.
-         flat_set<vote_id_type> votes;
+         /// These are the fields which can be updated by the active authority.
+         struct options_type {
+            /// The memo key is the key this account will typically use to encrypt/sign transaction memos and other non-
+            /// validated account activities. This field is here to prevent confusion if the active authority has zero or
+            /// multiple keys in it.
+            object_id_type memo_key = key_id_type();
+            key_id_type get_memo_key()const { return memo_key; }
+            /// If this field is set to an account ID other than 0, this account's votes will be ignored and its stake
+            /// will be counted as voting for the referenced account's selected votes instead.
+            account_id_type voting_account;
+
+            /// The number of active witnesses this account votes the blockchain should appoint
+            /// Must not exceed the actual number of witnesses voted for in @ref votes
+            uint16_t num_witness = 0;
+            /// The number of active committee members this account votes the blockchain should appoint
+            /// Must not exceed the actual number of committee members voted for in @ref votes
+            uint16_t num_committee = 0;
+            /// This is the list of vote IDs this account votes for. The weight of these votes is determined by this
+            /// account's balance of core asset.
+            flat_set<vote_id_type> votes;
+
+            void validate()const;
+         } options;
 
          /// The reference implementation records the account's statistics in a separate object. This field contains the
          /// ID of that object.
@@ -189,6 +204,12 @@ namespace graphene { namespace chain {
           * Vesting balance which receives cashback_reward deposits.
           */
          optional<vesting_balance_id_type> cashback_vb;
+         template<typename DB>
+         const vesting_balance_object& cashback_balance(const DB& db)const
+         {
+            FC_ASSERT(cashback_vb);
+            return db.get(*cashback_vb);
+         }
 
          /// @return true if this is a lifetime member account; false otherwise.
          bool is_lifetime_member()const
@@ -235,6 +256,44 @@ namespace graphene { namespace chain {
          delegate_id_type    delegate_id; // optional
    };
 
+   /**
+    *  @brief This secondary index will allow a reverse lookup of all accounts that a particular key or account
+    *  is an potential signing authority. 
+    */
+   class account_member_index : public secondary_index
+   {
+      public:
+         virtual void object_inserted( const object& obj ) override;
+         virtual void object_removed( const object& obj ) override;
+         virtual void about_to_modify( const object& before ) override;
+         virtual void object_modified( const object& after  ) override;
+
+
+         /** given an account or key, map it to the set of accounts that reference it in an active or owner authority */
+         map< object_id_type, set<account_id_type> > account_to_memberships;
+
+
+      protected:
+         set<object_id_type>  get_members( const account_object& a )const;
+         set<object_id_type>  before_members;
+   };
+
+   /**
+    *  @brief This secondary index will allow a reverse lookup of all accounts that have been referred by
+    *  a particular account.
+    */
+   class account_referrer_index : public secondary_index
+   {
+      public:
+         virtual void object_inserted( const object& obj ) override;
+         virtual void object_removed( const object& obj ) override;
+         virtual void about_to_modify( const object& before ) override;
+         virtual void object_modified( const object& after  ) override;
+
+         /** maps the referrer to the set of accounts that they have referred */
+         map< account_id_type, set<account_id_type> > referred_by;
+   };
+
    struct by_asset;
    struct by_account;
    struct by_balance;
@@ -271,12 +330,12 @@ namespace graphene { namespace chain {
          hashed_unique< tag<by_id>, member< object, object_id_type, &object::id > >,
          ordered_non_unique< tag<by_name>, member<account_object, string, &account_object::name> >
       >
-   > account_object_multi_index_type;
+   > account_multi_index_type;
 
    /**
     * @ingroup object_index
     */
-   typedef generic_index<account_object, account_object_multi_index_type> account_index;
+   typedef generic_index<account_object, account_multi_index_type> account_index;
 
 }}
 
@@ -284,8 +343,10 @@ FC_REFLECT_DERIVED( graphene::chain::account_object,
                     (graphene::db::annotated_object<graphene::chain::account_object>),
                     (membership_expiration_date)(registrar)(referrer)(lifetime_referrer)
                     (network_fee_percentage)(lifetime_referrer_fee_percentage)(referrer_rewards_percentage)
-                    (name)(owner)(active)(memo_key)(voting_account)(num_witness)(num_committee)(votes)
-                    (statistics)(whitelisting_accounts)(blacklisting_accounts)(cashback_vb) )
+                    (name)(owner)(active)(options)(statistics)(whitelisting_accounts)(blacklisting_accounts)
+                    (cashback_vb) )
+
+FC_REFLECT(graphene::chain::account_object::options_type, (memo_key)(voting_account)(num_witness)(num_committee)(votes))
 
 FC_REFLECT_DERIVED( graphene::chain::account_balance_object,
                     (graphene::db::object),

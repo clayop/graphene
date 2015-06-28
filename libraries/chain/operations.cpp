@@ -17,6 +17,7 @@
  */
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/operations.hpp>
+#include <graphene/chain/predicate.hpp>
 #include <fc/crypto/aes.hpp>
 
 namespace graphene { namespace chain {
@@ -111,12 +112,13 @@ share_type account_create_operation::calculate_fee( const fee_schedule_type& sch
    auto core_fee_required = schedule.account_create_fee;
 
    uint32_t s = name.size();
-   if( is_cheap_name( name ) ) s = 63;
+   if( is_cheap_name(name) )
+      s = 63;
 
    FC_ASSERT( s >= 2 );
 
-   if( s == 8 )
-     core_fee_required = schedule.account_len8_fee;
+   if( s >= 8 && s < 63 )
+     core_fee_required = schedule.account_len8up_fee;
    else if( s == 7 )
      core_fee_required = schedule.account_len7_fee;
    else if( s == 6 )
@@ -130,35 +132,55 @@ share_type account_create_operation::calculate_fee( const fee_schedule_type& sch
    else if( s == 2 )
       core_fee_required = schedule.account_len2_fee;
 
+   // Authorities and vote lists can be arbitrarily large, so charge a data fee for big ones
+   core_fee_required += schedule.total_data_fee(active, owner, options.votes);
+
    return core_fee_required;
 }
 share_type account_update_operation::calculate_fee( const fee_schedule_type& schedule )const
 {
-   return schedule.account_create_fee;
+   auto core_fee_required = schedule.account_update_fee + schedule.total_data_fee(owner, active);
+   if( new_options )
+      core_fee_required += schedule.total_data_fee(new_options->votes);
+   return core_fee_required;
 }
 void account_update_operation::get_required_auth(flat_set<account_id_type>& active_auth_set,
                                                  flat_set<account_id_type>& owner_auth_set) const
 {
    if( owner || active )
-      owner_auth_set.insert( account );
+      owner_auth_set.insert(account);
    else
-      active_auth_set.insert( account );
+      active_auth_set.insert(account);
 }
 
 void account_update_operation::validate()const
 {
    FC_ASSERT( fee.amount >= 0 );
    FC_ASSERT( account != account_id_type() );
-   FC_ASSERT( owner || active || voting_account || memo_key || vote );
+   FC_ASSERT( owner || active || new_options );
+
+   if( new_options )
+      new_options->validate();
 }
 
-
-share_type asset_create_operation::calculate_fee( const fee_schedule_type& schedule )const
+share_type asset_create_operation::calculate_fee(const fee_schedule_type& schedule)const
 {
    auto core_fee_required = schedule.asset_create_fee;
 
-   uint32_t s = symbol.size();
-   while( s <= 6 ) {  core_fee_required *= 30; ++s; }
+   switch(symbol.size()) {
+   case 3: core_fee_required += schedule.asset_len3_fee;
+       break;
+   case 4: core_fee_required += schedule.asset_len4_fee;
+       break;
+   case 5: core_fee_required += schedule.asset_len5_fee;
+       break;
+   case 6: core_fee_required += schedule.asset_len6_fee;
+       break;
+   default: core_fee_required += schedule.asset_len7up_fee;
+   }
+
+   // common_options contains several lists and a string. Charge fees for its size
+   core_fee_required += schedule.total_data_fee(common_options);
 
    return core_fee_required;
 }
@@ -167,9 +189,7 @@ share_type transfer_operation::calculate_fee( const fee_schedule_type& schedule 
 {
    share_type core_fee_required = schedule.transfer_fee;
    if( memo )
-   {
-      core_fee_required += share_type((memo->message.size() * schedule.data_fee)/1024);
-   }
+      core_fee_required += schedule.total_data_fee(memo->message);
    return core_fee_required;
 }
 
@@ -201,8 +221,7 @@ void account_create_operation::validate()const
 {
    FC_ASSERT( fee.amount >= 0 );
    FC_ASSERT( is_valid_name( name ) );
-   FC_ASSERT( referrer_percent >= 0   );
-   FC_ASSERT( referrer_percent <= 100 );
+   FC_ASSERT( referrer_percent <= GRAPHENE_100_PERCENT );
    FC_ASSERT( !owner.auths.empty() );
    auto pos = name.find( '/' );
    if( pos != string::npos )
@@ -210,10 +229,7 @@ void account_create_operation::validate()const
       FC_ASSERT( owner.weight_threshold == 1 );
       FC_ASSERT( owner.auths.size() == 1 );
    }
-   FC_ASSERT( num_witness + num_committee >= num_witness );  // no overflow
-   FC_ASSERT( num_witness + num_committee <= vote.size() );
-   // FC_ASSERT( (num_witness == 0) || (num_witness&0x01) == 0, "must be odd number" );
-   // FC_ASSERT( (num_committee == 0) || (num_committee&0x01) == 0, "must be odd number" );
+   options.validate();
 }
 
 
@@ -249,7 +265,7 @@ void asset_create_operation::get_required_auth(flat_set<account_id_type>& active
 void  asset_create_operation::validate()const
 {
    FC_ASSERT( fee.amount >= 0 );
-   FC_ASSERT( is_valid_symbol( symbol ) );
+   FC_ASSERT( is_valid_symbol(symbol) );
    common_options.validate();
    if( common_options.issuer_permissions & (disable_force_settle|global_settle) )
       FC_ASSERT( bitasset_options.valid() );
@@ -288,9 +304,9 @@ void asset_update_operation::validate()const
    FC_ASSERT(dummy.asset_id == asset_id_type());
 }
 
-share_type asset_update_operation::calculate_fee( const fee_schedule_type& k )const
+share_type asset_update_operation::calculate_fee(const fee_schedule_type& k)const
 {
-   return k.asset_update_fee;
+   return k.asset_update_fee + k.total_data_fee(new_options);
 }
 
 void asset_burn_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -305,9 +321,9 @@ void asset_burn_operation::validate()const
    FC_ASSERT( amount_to_burn.amount.value > 0 );
 }
 
-share_type asset_burn_operation::calculate_fee( const fee_schedule_type& k )const
+share_type asset_burn_operation::calculate_fee(const fee_schedule_type& k)const
 {
-   return k.asset_issue_fee;
+   return k.asset_burn_fee;
 }
 
 void asset_issue_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -330,7 +346,7 @@ share_type asset_issue_operation::calculate_fee( const fee_schedule_type& k )con
 
 share_type delegate_create_operation::calculate_fee( const fee_schedule_type& k )const
 {
-   return k.delegate_create_fee ;
+   return k.delegate_create_fee + k.total_data_fee(url);
 }
 
 void delegate_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -341,6 +357,7 @@ void delegate_create_operation::get_required_auth(flat_set<account_id_type>& act
 void delegate_create_operation::validate()const
 {
    FC_ASSERT( fee.amount >= 0 );
+   FC_ASSERT(url.size() < GRAPHENE_MAX_URL_LENGTH );
 }
 
 void asset_fund_fee_pool_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -375,7 +392,7 @@ void limit_order_create_operation::validate()const
 
 share_type limit_order_create_operation::calculate_fee(const fee_schedule_type& k) const
 {
-   return k.limit_order_fee;
+   return k.limit_order_create_fee;
 }
 
 void limit_order_cancel_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -390,39 +407,7 @@ void limit_order_cancel_operation::validate()const
 
 share_type limit_order_cancel_operation::calculate_fee(const fee_schedule_type& k) const
 {
-   return k.limit_order_fee;
-}
-
-void short_order_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
-{
-   active_auth_set.insert(seller);
-}
-
-void short_order_create_operation::validate()const
-{
-   FC_ASSERT( fee.amount >= 0 );
-   FC_ASSERT( initial_collateral_ratio >= GRAPHENE_MIN_COLLATERAL_RATIO     );
-   FC_ASSERT( initial_collateral_ratio >  maintenance_collateral_ratio );
-   FC_ASSERT( initial_collateral_ratio <= GRAPHENE_MAX_COLLATERAL_RATIO     );
-}
-
-share_type short_order_create_operation::calculate_fee(const fee_schedule_type& k) const
-{
-   return k.short_order_fee;
-}
-void short_order_cancel_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
-{
-   active_auth_set.insert(fee_paying_account);
-}
-
-void short_order_cancel_operation::validate()const
-{
-   FC_ASSERT( fee.amount >= 0 );
-}
-
-share_type short_order_cancel_operation::calculate_fee(const fee_schedule_type& k) const
-{
-   return k.short_order_fee;
+   return k.limit_order_create_fee;
 }
 
 void call_order_update_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -431,20 +416,15 @@ void call_order_update_operation::get_required_auth(flat_set<account_id_type>& a
 }
 
 void call_order_update_operation::validate()const
-{
+{ try {
    FC_ASSERT( fee.amount >= 0 );
-   FC_ASSERT( collateral_to_add.amount > 0 || amount_to_cover.amount > 0 || maintenance_collateral_ratio > 0 );
-   if( amount_to_cover.amount == 0 )   FC_ASSERT( collateral_to_add.amount >= 0 );
-   if( collateral_to_add.amount.value <= 0 ) FC_ASSERT( amount_to_cover.amount.value > 0 );
-
-   FC_ASSERT( amount_to_cover.amount >= 0 );
-   FC_ASSERT( amount_to_cover.asset_id != collateral_to_add.asset_id );
-   FC_ASSERT( maintenance_collateral_ratio == 0 || maintenance_collateral_ratio >= 1000 );
-}
+   FC_ASSERT( delta_collateral.asset_id != delta_debt.asset_id );
+   FC_ASSERT( delta_collateral.amount != 0 || delta_debt.amount != 0 );
+} FC_CAPTURE_AND_RETHROW((*this)) }
 
 share_type call_order_update_operation::calculate_fee(const fee_schedule_type& k) const
 {
-   return k.short_order_fee;
+   return k.call_order_fee;
 }
 
 proposal_create_operation proposal_create_operation::genesis_proposal(const database& db)
@@ -466,6 +446,11 @@ void proposal_create_operation::validate() const
 {
    FC_ASSERT( !proposed_ops.empty() );
    for( const auto& op : proposed_ops ) op.validate();
+}
+
+share_type proposal_create_operation::calculate_fee(const fee_schedule_type& k) const
+{
+   return k.proposal_create_fee + k.total_data_fee(proposed_ops);
 }
 
 void proposal_update_operation::get_required_auth(flat_set<account_id_type>& active_auth_set,
@@ -505,13 +490,23 @@ void proposal_update_operation::validate() const
    }
 }
 
+share_type proposal_update_operation::calculate_fee(const fee_schedule_type& k) const
+{
+   return k.proposal_create_fee + k.total_data_fee(active_approvals_to_add,
+                                                   active_approvals_to_remove,
+                                                   owner_approvals_to_add,
+                                                   owner_approvals_to_remove,
+                                                   key_approvals_to_add,
+                                                   key_approvals_to_remove);
+}
+
 void proposal_delete_operation::get_required_auth(flat_set<account_id_type>& active_auth_set,
                                                   flat_set<account_id_type>& owner_auth_set) const
 {
-   if( using_owner_authority )
-      owner_auth_set.insert(fee_paying_account);
-   else
-      active_auth_set.insert(fee_paying_account);
+    if( using_owner_authority )
+        owner_auth_set.insert(fee_paying_account);
+    else
+        active_auth_set.insert(fee_paying_account);
 }
 
 void account_transfer_operation::validate()const
@@ -526,7 +521,7 @@ void account_transfer_operation::get_required_auth(flat_set<account_id_type>& ac
 
 share_type  account_transfer_operation::calculate_fee( const fee_schedule_type& k )const
 {
-   return k.transfer_fee;
+   return k.account_transfer_fee;
 }
 
 
@@ -575,11 +570,12 @@ void witness_create_operation::get_required_auth(flat_set<graphene::chain::accou
 void witness_create_operation::validate() const
 {
    FC_ASSERT(fee.amount >= 0);
+   FC_ASSERT(url.size() < GRAPHENE_MAX_URL_LENGTH );
 }
 
 share_type witness_create_operation::calculate_fee(const fee_schedule_type& k) const
 {
-   return k.delegate_create_fee;
+   return k.witness_create_fee + k.total_data_fee(url);
 }
 
 void withdraw_permission_update_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
@@ -613,11 +609,11 @@ void withdraw_permission_claim_operation::validate()const
    FC_ASSERT( fee.amount >= 0 );
 }
 
-share_type withdraw_permission_claim_operation::calculate_fee( const fee_schedule_type& schedule )const
+share_type withdraw_permission_claim_operation::calculate_fee(const fee_schedule_type& k)const
 {
-   share_type core_fee_required = schedule.transfer_fee;
+   share_type core_fee_required = k.withdraw_permission_claim_fee;
    if( memo )
-      core_fee_required += share_type((memo->message.size() * schedule.data_fee)/1024);
+      core_fee_required += k.total_data_fee(memo->message);
    return core_fee_required;
 }
 
@@ -634,7 +630,7 @@ void withdraw_permission_delete_operation::validate() const
 
 share_type withdraw_permission_delete_operation::calculate_fee(const fee_schedule_type& k) const
 {
-   return k.withdraw_permission_update_fee;
+   return k.withdraw_permission_delete_fee;
 }
 
 void withdraw_permission_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -654,7 +650,7 @@ void withdraw_permission_create_operation::validate() const
 
 share_type withdraw_permission_create_operation::calculate_fee(const fee_schedule_type& k) const
 {
-   return k.withdraw_permission_update_fee;
+   return k.withdraw_permission_create_fee;
 }
 
 
@@ -670,9 +666,9 @@ void        asset_global_settle_operation::validate()const
    FC_ASSERT( asset_to_settle == settle_price.base.asset_id );
 }
 
-share_type  asset_global_settle_operation::calculate_fee( const fee_schedule_type& k )const
+share_type  asset_global_settle_operation::calculate_fee(const fee_schedule_type& k)const
 {
-   return k.global_settle_fee;
+   return k.asset_global_settle_fee;
 }
 
 void asset_settle_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -717,42 +713,33 @@ void asset_update_feed_producers_operation::validate() const
 {
    FC_ASSERT( fee.amount >= 0 );
 }
-void            file_write_operation::validate()const
-{
-   FC_ASSERT( uint32_t(offset) + data.size() <= file_size );
-   FC_ASSERT( flags <= 0x2f );
-   FC_ASSERT( file_size > 0 );
-   /** less than 10 years to prevent overflow of 64 bit numbers in the value*lease_seconds*file_size calculation */
-   FC_ASSERT( lease_seconds < 60*60*24*365*10 );
-}
 
-share_type      file_write_operation::calculate_fee( const fee_schedule_type& k )const
+share_type asset_update_feed_producers_operation::calculate_fee(const fee_schedule_type &k) const
 {
-   return ((((k.file_storage_fee_per_day * lease_seconds)/(60*60*24))*file_size)/0xff) + ((data.size() * k.data_fee)/1024);
+   return k.asset_update_fee + k.total_data_fee(new_feed_producers);
 }
-
 
 void vesting_balance_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
 {
-   // owner's authorization isn't needed since this is effectively a transfer of value TO the owner
-   active_auth_set.insert( creator );
+    // owner's authorization isn't needed since this is effectively a transfer of value TO the owner
+   active_auth_set.insert(creator);
 }
 
-share_type vesting_balance_create_operation::calculate_fee( const fee_schedule_type& k )const
+share_type vesting_balance_create_operation::calculate_fee(const fee_schedule_type& k)const
 {
-   return k.vesting_balance_create_fee;
+   // We don't want to have custom inspection for each policy type; instead, charge a data fee for big ones
+   return k.vesting_balance_create_fee + k.total_data_fee(policy);
 }
 
 void vesting_balance_create_operation::validate()const
 {
    FC_ASSERT( fee.amount >= 0 );
    FC_ASSERT( amount.amount > 0 );
-   FC_ASSERT( vesting_seconds > 0 );
 }
 
 void vesting_balance_withdraw_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
 {
-   active_auth_set.insert( owner );
+   active_auth_set.insert(owner);
 }
 
 void vesting_balance_withdraw_operation::validate()const
@@ -761,7 +748,7 @@ void vesting_balance_withdraw_operation::validate()const
    FC_ASSERT( amount.amount > 0 );
 }
 
-share_type vesting_balance_withdraw_operation::calculate_fee( const fee_schedule_type& k )const
+share_type vesting_balance_withdraw_operation::calculate_fee(const fee_schedule_type& k)const
 {
    return k.vesting_balance_withdraw_fee;
 }
@@ -813,80 +800,9 @@ void custom_operation::validate()const
 {
    FC_ASSERT( fee.amount > 0 );
 }
-share_type custom_operation::calculate_fee( const fee_schedule_type& k )const
+share_type custom_operation::calculate_fee(const fee_schedule_type& k)const
 {
-   return (data.size() * k.data_fee)/1024;
-}
-
-void bond_create_offer_operation::get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const
-{
-   active_auth_set.insert( creator );
-}
-
-void bond_create_offer_operation::validate()const
-{ try {
-   FC_ASSERT( fee.amount >= 0 );
-   FC_ASSERT( amount.amount > 0 );
-   collateral_rate.validate();
-   FC_ASSERT( (amount * collateral_rate).amount > 0 );
-   FC_ASSERT( min_loan_period_sec > 0 );
-   FC_ASSERT( loan_period_sec >= min_loan_period_sec );
-   FC_ASSERT( interest_apr <= GRAPHENE_MAX_INTEREST_APR );
-} FC_CAPTURE_AND_RETHROW((*this)) }
-
-share_type bond_create_offer_operation::calculate_fee( const fee_schedule_type& schedule )const
-{
-   return schedule.create_bond_offer_fee;
-}
-
-
-void        bond_cancel_offer_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
-{
-   active_auth_set.insert( creator );
-}
-void        bond_cancel_offer_operation::validate()const
-{
-   FC_ASSERT( fee.amount > 0 );
-   FC_ASSERT( refund.amount > 0 );
-}
-share_type  bond_cancel_offer_operation::calculate_fee( const fee_schedule_type& k )const
-{
-   return k.cancel_bond_offer_fee;
-}
-
-void        bond_accept_offer_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
-{
-   active_auth_set.insert( claimer );
-}
-
-void        bond_accept_offer_operation::validate()const
-{
-   FC_ASSERT( fee.amount > 0 );
-   (amount_collateral / amount_borrowed).validate();
-   FC_ASSERT( claimer == borrower || claimer == lender );
-   FC_ASSERT( borrower != lender );
-}
-
-share_type  bond_accept_offer_operation::calculate_fee( const fee_schedule_type& k )const
-{
-   return k.accept_bond_offer_fee;
-}
-void        bond_claim_collateral_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
-{
-   active_auth_set.insert( claimer );
-}
-
-void        bond_claim_collateral_operation::validate()const
-{
-   FC_ASSERT( fee.amount > 0 );
-   FC_ASSERT(payoff_amount.amount >= 0 );
-   FC_ASSERT(collateral_claimed.amount >= 0 );
-   FC_ASSERT( payoff_amount.asset_id != collateral_claimed.asset_id );
-}
-
-share_type  bond_claim_collateral_operation::calculate_fee( const fee_schedule_type& k )const
-{
-   return k.claim_bond_collateral_fee;
+   return k.custom_operation_fee + k.total_data_fee(required_auths, data);
 }
 
 void worker_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -900,11 +816,14 @@ void worker_create_operation::validate() const
    FC_ASSERT(work_end_date > work_begin_date);
    FC_ASSERT(daily_pay > 0);
    FC_ASSERT(daily_pay < GRAPHENE_BLOCKCHAIN_MAX_SHARES);
+   FC_ASSERT(name.size() < GRAPHENE_MAX_WORKER_NAME_LENGTH );
+   FC_ASSERT(url.size() < GRAPHENE_MAX_URL_LENGTH );
 }
 
 share_type worker_create_operation::calculate_fee(const fee_schedule_type& k) const
 {
-   return k.worker_create_fee;
+   // Charge data fees for excessively long name, URL, or large initializers
+   return k.worker_create_fee + k.total_data_fee(name, url, initializer);
 }
 
 string memo_message::serialize() const
@@ -935,126 +854,61 @@ share_type account_upgrade_operation::calculate_fee(const fee_schedule_type& k) 
    return k.membership_annual_fee;
 }
 
-account_id_type transfer_to_blind_operation::fee_payer()const
+struct predicate_validator
 {
-    // TODO
-    return from;
-}
+   typedef void result_type;
 
-void transfer_to_blind_operation::get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const
-{
-    // TODO
-}
-
-void transfer_to_blind_operation::validate()const
-{
-    // TODO
-}
-
-share_type transfer_to_blind_operation::calculate_fee( const fee_schedule_type& k )const
-{
-    // TODO
-    return 0;
-}
-
-void transfer_to_blind_operation::get_balance_delta( balance_accumulator& acc, const operation_result& result )const
-{
-    // TODO
-}
-
-account_id_type transfer_from_blind_operation::fee_payer()const
-{
-    // TODO
-    return to;
-}
-
-void transfer_from_blind_operation::get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const
-{
-    // TODO
-}
-
-void transfer_from_blind_operation::validate()const
-{
-    // TODO
-}
-
-share_type transfer_from_blind_operation::calculate_fee( const fee_schedule_type& k )const
-{
-    // TODO
-    return 0;
-}
-
-void transfer_from_blind_operation::get_balance_delta( balance_accumulator& acc, const operation_result& result )const
-{
-    // TODO
-}
-
-/**
- *  If fee_payer = temp_account_id, then the fee is paid by the surplus balance of inputs-outputs and
- *  100% of the fee goes to the network.
- */
-account_id_type blind_transfer_operation::fee_payer()const
-{
-    // TODO
-   return fee_payer_id;
-}
-
-void blind_transfer_operation::get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const
-{
-    // TODO
-    /*
-   active_auth_set.insert( fee_payer_id );
-   active_auth_set.insert( from_account );
-   for( auto input : inputs )
+   template<typename T>
+   void operator()( const T& p )const
    {
-      if( input.owner.which() == static_variant<address,account_id_type>::tag<account_id_type>::value )
-         active_auth_set.insert( input.owner.get<account_id_type>() );
+      p.validate();
    }
-   */
-}
+};
 
-/**
- *  This method can be computationally intensive because it verifies that input commitments - output commitments add up to 0
- */
-void blind_transfer_operation::validate()const
+void assert_operation::validate()const
 {
-    // TODO
-    /*
-   vector<commitment_type> in(inputs.size());
-   vector<commitment_type> out(outputs.size());
-   int64_t                 net_public = from_amount.value - to_amount.value;
-   for( uint32_t i = 0; i < in.size(); ++i )  in[i] = inputs[i].commitment;
-   for( uint32_t i = 0; i < out.size(); ++i ) out[i] = outputs[i].commitment;
-   FC_ASSERT( in.size() + out.size() || net_public == 0 );
-   if( fee_payer_id == GRAPHENE_TEMP_ACCOUNT ) net_public -= fee.amount.value;
-   FC_ASSERT( fc::ecc::verify_sum( in, out, net_public ) );
-
-   if( outputs.size() > 1 )
+   FC_ASSERT( fee.amount >= 0 );
+   for( const auto& item : predicates )
    {
-      for( auto out : outputs )
-      {
-         auto info = fc::ecc::range_get_info( out.range_proof );
-         FC_ASSERT( info.min_value >= 0 );
-         FC_ASSERT( info.max_value <= GRAPHENE_MAX_SHARE_SUPPLY );
+      FC_ASSERT( item.size() > 0 );
+      fc::datastream<const char*> ds( item.data(), item.size() );
+      predicate p;
+      try {
+         fc::raw::unpack( ds, p );
       }
+      catch ( const fc::exception& e )
+      {
+         continue;
+      }
+      p.visit( predicate_validator() );
    }
-   */
+}
+void assert_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
+{
+   active_auth_set.insert(fee_paying_account);
+   active_auth_set.insert(required_auths.begin(), required_auths.end());
 }
 
-share_type blind_transfer_operation::calculate_fee( const fee_schedule_type& k )const
+/**
+ * The fee for assert operations is proportional to their size,
+ * but cheaper than a data fee because they require no storage
+ */
+share_type  assert_operation::calculate_fee(const fee_schedule_type& k)const
 {
-    // TODO
-    return 0;
+   return std::max(size_t(1), fc::raw::pack_size(*this) / 1024) * k.assert_op_fee;
 }
 
-void blind_transfer_operation::get_balance_delta( balance_accumulator& acc, const operation_result& result)const
+void  balance_claim_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
 {
-    // TODO
-    /*
-   acc.adjust( fee_payer(), -fee );
-   acc.adjust( from_account, asset(-from_amount,fee.asset_id) );
-   acc.adjust( to_account, asset(to_amount,fee.asset_id) );
-   */
+   active_auth_set.insert( fee_payer() );
 }
+
+void  balance_claim_operation::validate()const
+{
+   FC_ASSERT( owners.size() > 0 );
+   FC_ASSERT( total_claimed.amount > 0 );
+   FC_ASSERT( fee == asset() );
+}
+
 
 } } // namespace graphene::chain

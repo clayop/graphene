@@ -23,7 +23,7 @@
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/delegate_object.hpp>
 #include <graphene/chain/limit_order_object.hpp>
-#include <graphene/chain/short_order_object.hpp>
+#include <graphene/chain/call_order_object.hpp>
 
 #include <fc/uint128.hpp>
 
@@ -95,13 +95,6 @@ namespace graphene { namespace chain {
       }
    }
 
-   /*
-   bool generic_evaluator::verify_signature( const key_object& k )
-   {
-      return trx_state->_skip_signature_check || trx_state->signed_by( k.id );
-   }
-   */
-
    object_id_type generic_evaluator::get_relative_id( object_id_type rel_id )const
    {
       if( rel_id.space() == relative_protocol_ids )
@@ -115,7 +108,15 @@ namespace graphene { namespace chain {
       return rel_id;
    }
 
-   authority generic_evaluator::resolve_relative_ids( const authority& a )const
+   void generic_evaluator::check_relative_ids(const authority& a)const
+   {
+      for( const auto& item : a.auths )
+      {
+          auto id = get_relative_id( item.first );
+          FC_ASSERT( id.type() == key_object_type || id.type() == account_object_type );
+      }
+   }
+   authority generic_evaluator::resolve_relative_ids(const authority& a)const
    {
       authority result;
       result.auths.reserve( a.auths.size() );

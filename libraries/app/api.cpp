@@ -17,10 +17,8 @@
  */
 #include <graphene/app/api.hpp>
 #include <graphene/app/application.hpp>
-#include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/utilities/key_conversion.hpp>
-#include <graphene/chain/operation_history_object.hpp>
 
 #include <fc/crypto/hex.hpp>
 
@@ -167,7 +165,7 @@ namespace graphene { namespace app {
        else
        {
           result.reserve(assets.size());
-           
+
           std::transform(assets.begin(), assets.end(), std::back_inserter(result),
                          [this, acnt](asset_id_type id) { return _db.get_balance(acnt, id); });
        }
@@ -215,22 +213,6 @@ namespace graphene { namespace app {
        return result;
     }
 
-    vector<short_order_object> database_api::get_short_orders(asset_id_type a, uint32_t limit)const
-    {
-      const auto& short_order_idx = _db.get_index_type<short_order_index>();
-      const auto& sell_price_idx = short_order_idx.indices().get<by_price>();
-      const asset_object& mia = _db.get(a);
-
-      FC_ASSERT( mia.is_market_issued(), "must be a market issued asset" );
-
-      price index_price = price::min(mia.get_id(), mia.bitasset_data(_db).options.short_backing_asset);
-
-      auto short_itr = sell_price_idx.lower_bound(index_price.max());
-      auto short_end = sell_price_idx.upper_bound(index_price.min());
-
-      return vector<short_order_object>(short_itr, short_end);
-    }
-
     vector<call_order_object> database_api::get_call_orders(asset_id_type a, uint32_t limit)const
     {
        const auto& call_index = _db.get_index_type<call_order_index>().indices().get<by_price>();
@@ -258,13 +240,31 @@ namespace graphene { namespace app {
 
        auto itr = assets_by_symbol.lower_bound(lower_bound_symbol);
 
-       if( lower_bound_symbol == "" ) 
+       if( lower_bound_symbol == "" )
           itr = assets_by_symbol.begin();
 
        while(limit-- && itr != assets_by_symbol.end())
           result.emplace_back(*itr++);
 
        return result;
+    }
+
+    fc::optional<delegate_object> database_api::get_delegate_by_account(account_id_type account) const
+    {
+       const auto& idx = _db.get_index_type<delegate_index>().indices().get<by_account>();
+       auto itr = idx.find(account);
+       if( itr != idx.end() )
+          return *itr;
+       return {};
+    }
+
+    fc::optional<witness_object> database_api::get_witness_by_account(account_id_type account) const
+    {
+       const auto& idx = _db.get_index_type<witness_index>().indices().get<by_account>();
+       auto itr = idx.find(account);
+       if( itr != idx.end() )
+          return *itr;
+       return {};
     }
 
     login_api::login_api(application& a)
@@ -336,6 +336,10 @@ namespace graphene { namespace app {
              {
                 _subscriptions[id](obj->to_variant());
              }
+             else
+             {
+                _subscriptions[id](fc::variant(id));
+             }
           }
        });
     }
@@ -358,15 +362,11 @@ namespace graphene { namespace app {
              case operation::tag<limit_order_create_operation>::value:
                 market = op.op.get<limit_order_create_operation>().get_market();
                 break;
-             case operation::tag<short_order_create_operation>::value:
-                market = op.op.get<limit_order_create_operation>().get_market();
-                break;
              case operation::tag<fill_order_operation>::value:
                 market = op.op.get<fill_order_operation>().get_market();
                 break;
                 /*
              case operation::tag<limit_order_cancel_operation>::value:
-             case operation::tag<short_order_cancel_operation>::value:
              */
              default: break;
           }
@@ -449,5 +449,128 @@ namespace graphene { namespace app {
        }
        return result;
     }
+
+
+    flat_set<uint32_t> history_api::get_market_history_buckets()const
+    {
+       auto hist = _app.get_plugin<market_history_plugin>( "market_history" );
+       FC_ASSERT( hist );
+       return hist->tracked_buckets();
+    }
+
+    vector<bucket_object> history_api::get_market_history( asset_id_type a, asset_id_type b, 
+                                                           uint32_t bucket_seconds, fc::time_point_sec start, fc::time_point_sec end )const
+    { try {
+       FC_ASSERT(_app.chain_database());
+       const auto& db = *_app.chain_database();
+       vector<bucket_object> result;
+       result.reserve(100);
+
+       if( a > b ) std::swap(a,b);
+
+       const auto& bidx = db.get_index_type<bucket_index>();
+       const auto& by_key_idx = bidx.indices().get<by_key>();
+
+       auto itr = by_key_idx.lower_bound( bucket_key( a, b, bucket_seconds, start ) );
+       while( itr != by_key_idx.end() && itr->key.open <= end && result.size() < 100 )
+       {
+          if( !(itr->key.base == a && itr->key.quote == b && itr->key.seconds == bucket_seconds) )
+            return result;
+          result.push_back(*itr);
+          ++itr;
+       }
+       return result;
+    } FC_CAPTURE_AND_RETHROW( (a)(b)(bucket_seconds)(start)(end) ) }
+
+    /**
+     *  @return all accounts that referr to the key or account id in their owner or active authorities.
+     */
+    vector<account_id_type> database_api::get_account_references( object_id_type key_or_account_id )const
+    {
+       const auto& idx = _db.get_index_type<account_index>();
+       const auto& aidx = dynamic_cast<const primary_index<account_index>&>(idx);
+       const auto& refs = aidx.get_secondary_index<graphene::chain::account_member_index>();
+       auto itr = refs.account_to_memberships.find(key_or_account_id);
+       vector<account_id_type> result;
+
+       if( itr != refs.account_to_memberships.end() )
+       {
+          result.reserve( itr->second.size() );
+          for( auto item : itr->second ) result.push_back(item);
+       }
+       return result;
+    }
+
+    /** TODO: add secondary index that will accelerate this process */
+    vector<proposal_object> database_api::get_proposed_transactions( account_id_type id )const
+    {
+       const auto& idx = _db.get_index_type<proposal_index>();
+       vector<proposal_object> result;
+
+       idx.inspect_all_objects( [&](const object& obj){
+               const proposal_object& p = static_cast<const proposal_object&>(obj);
+               if( p.required_active_approvals.find( id ) != p.required_active_approvals.end() )
+                  result.push_back(p);
+               else if ( p.required_owner_approvals.find( id ) != p.required_owner_approvals.end() )
+                  result.push_back(p);
+               else if ( p.available_active_approvals.find( id ) != p.available_active_approvals.end() )
+                  result.push_back(p);
+       });
+       return result;
+    }
+
+    /**
+     *  @return all key_ids that have been registered for a given address. 
+     */
+    vector<key_id_type>  database_api::get_keys_for_address( const address& a )const
+    { try {
+       vector<key_id_type> result;
+       const auto& idx = _db.get_index_type<key_index>();
+       const auto& aidx = idx.indices().get<by_address>();
+       auto itr = aidx.find(a);
+
+       while( itr != aidx.end() && itr->key_address() == a )
+       {
+          result.push_back( itr->id );
+          ++itr;
+       }
+       return result;
+    } FC_CAPTURE_AND_RETHROW( (a) ) } 
+
+    vector<call_order_object> database_api::get_margin_positions( const account_id_type& id )const
+    { try {
+       const auto& idx = _db.get_index_type<call_order_index>();
+       const auto& aidx = idx.indices().get<by_account>();
+       auto start = aidx.lower_bound( boost::make_tuple( id, 0 ) );
+       auto end = aidx.lower_bound( boost::make_tuple( id+1, 0 ) );
+       vector<call_order_object> result;
+       while( start != end )
+       {
+          result.push_back(*start);
+          ++start;
+       }
+       return result;
+    } FC_CAPTURE_AND_RETHROW( (id) ) }
+
+
+    vector<balance_object>  database_api::get_balance_objects( const vector<address>& addrs )const
+    { try {
+         const auto& bal_idx = _db.get_index_type<balance_index>();
+         const auto& by_owner_idx = bal_idx.indices().get<by_owner>();
+
+         vector<balance_object> result;
+
+         for( const auto& owner : addrs )
+         {
+            auto itr = by_owner_idx.lower_bound( boost::make_tuple( owner, asset_id_type(0) ) );
+            while( itr != by_owner_idx.end() && itr->owner == owner )
+            {
+               result.push_back( *itr );
+               ++itr;
+            }
+         }
+         return result;
+    } FC_CAPTURE_AND_RETHROW( (addrs) ) }
+
 
 } } // graphene::app

@@ -18,7 +18,6 @@
 #pragma once
 #include <fc/container/flat_fwd.hpp>
 #include <fc/io/varint.hpp>
-#include <fc/io/raw_fwd.hpp>
 #include <fc/io/enum_type.hpp>
 #include <fc/crypto/sha224.hpp>
 #include <fc/crypto/elliptic.hpp>
@@ -28,9 +27,11 @@
 #include <fc/safe.hpp>
 #include <fc/container/flat.hpp>
 #include <fc/string.hpp>
+#include <fc/io/raw.hpp>
 #include <memory>
 #include <vector>
 #include <deque>
+#include <cstdint>
 #include <graphene/chain/address.hpp>
 #include <graphene/db/object_id.hpp>
 
@@ -108,17 +109,14 @@ namespace graphene { namespace chain {
       delegate_object_type,
       witness_object_type,
       limit_order_object_type,
-      short_order_object_type,
       call_order_object_type,
       custom_object_type,
       proposal_object_type,
       operation_history_object_type,
       withdraw_permission_object_type,
-      bond_offer_object_type,
-      bond_object_type,
-      file_object_type,
       vesting_balance_object_type,
       worker_object_type,
+      balance_object_type,
       OBJECT_TYPE_COUNT ///< Sentry value which contains the number of different object types
    };
 
@@ -155,18 +153,15 @@ namespace graphene { namespace chain {
    class force_settlement_object;
    class key_object;
    class limit_order_object;
-   class short_order_object;
    class call_order_object;
    class custom_object;
    class proposal_object;
    class operation_history_object;
    class withdraw_permission_object;
-   class bond_object;
-   class bond_offer_object;
-   class file_object;
    class vesting_balance_object;
    class witness_schedule_object;
    class worker_object;
+   class balance_object;
 
    typedef object_id< protocol_ids, key_object_type,                key_object>                   key_id_type;
    typedef object_id< protocol_ids, account_object_type,            account_object>               account_id_type;
@@ -175,17 +170,14 @@ namespace graphene { namespace chain {
    typedef object_id< protocol_ids, delegate_object_type,           delegate_object>              delegate_id_type;
    typedef object_id< protocol_ids, witness_object_type,            witness_object>               witness_id_type;
    typedef object_id< protocol_ids, limit_order_object_type,        limit_order_object>           limit_order_id_type;
-   typedef object_id< protocol_ids, short_order_object_type,        short_order_object>           short_order_id_type;
    typedef object_id< protocol_ids, call_order_object_type,         call_order_object>            call_order_id_type;
    typedef object_id< protocol_ids, custom_object_type,             custom_object>                custom_id_type;
    typedef object_id< protocol_ids, proposal_object_type,           proposal_object>              proposal_id_type;
    typedef object_id< protocol_ids, operation_history_object_type,  operation_history_object>     operation_history_id_type;
    typedef object_id< protocol_ids, withdraw_permission_object_type,withdraw_permission_object>   withdraw_permission_id_type;
-   typedef object_id< protocol_ids, bond_offer_object_type,         bond_offer_object>            bond_offer_id_type;
-   typedef object_id< protocol_ids, bond_object_type,               bond_object>                  bond_id_type;
-   typedef object_id< protocol_ids, file_object_type,               file_object>                  file_id_type;
    typedef object_id< protocol_ids, vesting_balance_object_type,    vesting_balance_object>       vesting_balance_id_type;
    typedef object_id< protocol_ids, worker_object_type,             worker_object>                worker_id_type;
+   typedef object_id< protocol_ids, balance_object_type,            balance_object>                balance_id_type;
 
    typedef object_id< relative_protocol_ids, key_object_type, key_object>           relative_key_id_type;
    typedef object_id< relative_protocol_ids, account_object_type, account_object>   relative_account_id_type;
@@ -347,51 +339,71 @@ namespace graphene { namespace chain {
          }
       };
 
-      fee_schedule_type()
-      {
-         memset( (char*)this, 0, sizeof(*this) );
+      /// The number of bytes to charge a data fee for
+      const static int BYTES_PER_DATA_FEE = 1024;
+
+      template <class... Ts>
+      uint32_t total_data_fee(Ts... ts)const {
+          return data_size(ts...) / BYTES_PER_DATA_FEE * data_fee;
       }
 
-      uint32_t key_create_fee; ///< the cost to register a public key with the blockchain
-      uint32_t account_create_fee; ///< the cost to register the cheapest non-free account
-      uint32_t account_len8_fee;
-      uint32_t account_len7_fee;
-      uint32_t account_len6_fee;
-      uint32_t account_len5_fee;
-      uint32_t account_len4_fee;
-      uint32_t account_len3_fee;
-      uint32_t account_len2_fee;
-      uint32_t account_premium_fee;  ///< accounts with premium names; i.e. @ref is_cheap_name returns false
-      uint32_t account_whitelist_fee; ///< the fee to whitelist an account
-      uint32_t delegate_create_fee; ///< fixed fee for registering as a delegate; used to discourage frivioulous delegates
-      uint32_t witness_withdraw_pay_fee; ///< fee for withdrawing witness pay
-      uint32_t transfer_fee; ///< fee for transferring some asset
-      uint32_t limit_order_fee; ///< fee for placing a limit order in the markets
-      uint32_t short_order_fee; ///< fee for placing a short order in the markets
-      uint32_t publish_feed_fee; ///< fee for publishing a price feed
-      uint32_t asset_create_fee; ///< the cost to register the cheapest asset
-      uint32_t asset_update_fee; ///< the cost to modify a registered asset
-      uint32_t asset_issue_fee; ///< the cost to modify a registered asset
-      uint32_t asset_fund_fee_pool_fee; ///< the cost to add funds to an asset's fee pool
-      uint32_t asset_settle_fee; ///< the cost to trigger a forced settlement of a market-issued asset
-      uint32_t market_fee; ///< a percentage charged on market orders
-      uint32_t transaction_fee; ///< a base price for every transaction
-      uint32_t data_fee; ///< a price per 1024 bytes of user data
-      uint32_t signature_fee; ///< a surcharge on transactions with more than 2 signatures.
-      uint32_t global_parameters_update_fee; ///< the cost to update the global parameters
-      uint32_t membership_annual_fee; ///< the annual cost of a membership subscription
-      uint32_t membership_lifetime_fee; ///< the cost to upgrade to a lifetime member
-      uint32_t withdraw_permission_update_fee; ///< the cost to create/update a withdraw permission
-      uint32_t create_bond_offer_fee;
-      uint32_t cancel_bond_offer_fee;
-      uint32_t accept_bond_offer_fee;
-      uint32_t claim_bond_collateral_fee;
-      uint32_t file_storage_fee_per_day; ///< the cost of leasing a file with 2^16 bytes for 1 day
-      uint32_t vesting_balance_create_fee;
-      uint32_t vesting_balance_withdraw_fee;
-      uint32_t global_settle_fee;
-      uint32_t worker_create_fee; ///< the cost to create a new worker
-      uint32_t worker_delete_fee; ///< the cost to delete a worker
+      uint32_t key_create_fee = 270300; ///< the cost to register a public key with the blockchain
+      uint64_t account_create_fee = 666666; ///< the cost to register the cheapest non-free account
+      uint32_t account_update_fee = 150000; ///< the cost to update an existing account
+      uint32_t account_transfer_fee = 300000; ///< the cost to transfer an account to a new owner
+      uint32_t account_whitelist_fee = 300000; ///< the fee to whitelist an account
+      uint32_t account_len8up_fee = 5*10000000; ///<  about $1
+      uint32_t account_len7_fee   = 5*100000000; ///< about $10
+      uint64_t account_len6_fee   = 5*UINT64_C(500000000); ///< about $50
+      uint64_t account_len5_fee   = 5*UINT64_C(1000000000); ///< about $100
+      uint64_t account_len4_fee   = 5*UINT64_C(2000000000); ///< about $200
+      uint64_t account_len3_fee   = 5*3000000000; ///< about $300
+      uint64_t account_len2_fee   = 5*4000000000; ///< about $400
+      uint32_t asset_create_fee = 5ll*500000000;   ///< about $35 for LTM, the cost to register the cheapest asset
+      uint32_t asset_update_fee = 150000; ///< the cost to modify a registered asset
+      uint32_t asset_issue_fee = 700000; ///< the cost to print a UIA and send it to an account
+      uint32_t asset_burn_fee = 1500000; ///< the cost to burn an asset
+      uint32_t asset_fund_fee_pool_fee = 150000; ///< the cost to add funds to an asset's fee pool
+      uint32_t asset_settle_fee = 7000000; ///< the cost to trigger a forced settlement of a market-issued asset
+      uint32_t asset_global_settle_fee = 140000000; ///< the cost to trigger a global forced settlement of a market asset
+      uint64_t asset_len7up_fee = 5*UINT64_C(500000000);   ///< about $35 for LTM
+      uint64_t asset_len6_fee   = 5*5000000000;  ///< about $350 for LTM
+      uint64_t asset_len5_fee   = 5*10000000000; ///< about $700 for LTM
+      uint64_t asset_len4_fee   = 5*50000000000; ///< about $3500 for LTM
+      uint64_t asset_len3_fee   = 5*70000000000; ///< about $5000 for LTM
+      uint32_t delegate_create_fee = 680000000; ///< fee for registering as a delegate; used to discourage frivolous delegates
+      uint32_t witness_create_fee = 680000000; /// < fee for registering as a witness
+      uint32_t witness_withdraw_pay_fee = 1500000; ///< fee for withdrawing witness pay
+      uint32_t transfer_fee = 2700000; ///< fee for transferring some asset
+      uint32_t limit_order_create_fee = 666666; ///< fee for placing a limit order in the markets
+      uint32_t limit_order_cancel_fee = 0; ///< fee for canceling a limit order
+      uint32_t call_order_fee = 800000; ///< fee for placing a call order in the markets
+      uint32_t publish_feed_fee = 10000; ///< fee for publishing a price feed
+      uint32_t data_fee = 13500000; ///< a price per BYTES_PER_DATA_FEE bytes of user data
+      uint32_t global_parameters_update_fee = 1350000; ///< the cost to update the global parameters
+      uint32_t membership_annual_fee = 270000000; ///< the annual cost of a membership subscription
+      uint32_t membership_lifetime_fee = 1350000000; ///< the cost to upgrade to a lifetime member
+      uint32_t withdraw_permission_create_fee = 2700000; ///< the cost to create a withdraw permission
+      uint32_t withdraw_permission_update_fee = 150000; ///< the cost to update a withdraw permission
+      uint32_t withdraw_permission_claim_fee = 700000; ///< the cost to withdraw from a withdraw permission
+      uint32_t withdraw_permission_delete_fee = 0; ///< the cost to delete a withdraw permission
+      uint32_t vesting_balance_create_fee = 7000000;
+      uint32_t vesting_balance_withdraw_fee = 2700000;
+      uint32_t worker_create_fee = 680000000; ///< the cost to create a new worker
+      uint32_t assert_op_fee = 150000; ///< fee per assert operation
+      uint32_t proposal_create_fee = 7000000; ///< fee for creating a proposed transaction
+      uint32_t proposal_update_fee = 1500000; ///< fee for adding or removing approval of a proposed transaction
+      uint32_t proposal_delete_fee = 0; ///< fee for deleting a proposed transaction
+      uint32_t custom_operation_fee = 300000; ///< fee for a custom operation
+
+   protected:
+      size_t data_size()const {
+          return 0;
+      }
+      template <class T, class... Ts>
+      size_t data_size(T t, Ts... ts)const {
+          return fc::raw::pack_size(t) + data_size(ts...);
+      }
    };
 
 
@@ -446,6 +458,10 @@ namespace graphene { namespace chain {
       bool                    allow_non_member_whitelists         = false; ///< true if non-member accounts may set whitelists and blacklists; false otherwise
       share_type              witness_pay_per_block               = GRAPHENE_DEFAULT_WITNESS_PAY_PER_BLOCK; ///< CORE to be allocated to witnesses (per block)
       share_type              worker_budget_per_day               = GRAPHENE_DEFAULT_WORKER_BUDGET_PER_DAY; ///< CORE to be allocated to workers (per day)
+      uint16_t                max_predicate_opcode                = GRAPHENE_DEFAULT_MAX_ASSERT_OPCODE; ///< predicate_opcode must be less than this number
+      share_type              fee_liquidation_threshold           = GRAPHENE_DEFAULT_FEE_LIQUIDATION_THRESHOLD; ///< value in CORE at which accumulated fees in blockchain-issued market assets should be liquidated
+      uint16_t                accounts_per_fee_scale              = GRAPHENE_DEFAULT_ACCOUNTS_PER_FEE_SCALE; ///< number of accounts between fee scalings
+      uint8_t                 account_fee_scale_bitshifts         = GRAPHENE_DEFAULT_ACCOUNT_FEE_SCALE_BITSHIFTS; ///< number of times to left bitshift account registration fee at each scaling
 
       void validate()const
       {
@@ -501,17 +517,14 @@ FC_REFLECT_ENUM( graphene::chain::object_type,
                  (delegate_object_type)
                  (witness_object_type)
                  (limit_order_object_type)
-                 (short_order_object_type)
                  (call_order_object_type)
                  (custom_object_type)
                  (proposal_object_type)
                  (operation_history_object_type)
                  (withdraw_permission_object_type)
-                 (bond_offer_object_type)
-                 (bond_object_type)
-                 (file_object_type)
                  (vesting_balance_object_type)
                  (worker_object_type)
+                 (balance_object_type)
                  (OBJECT_TYPE_COUNT)
                )
 FC_REFLECT_ENUM( graphene::chain::impl_object_type,
@@ -534,47 +547,54 @@ FC_REFLECT_ENUM( graphene::chain::meta_info_object_type, (meta_account_object_ty
 
 
 FC_REFLECT( graphene::chain::fee_schedule_type,
-                 (key_create_fee)
-                 (account_create_fee)
-                 (account_len8_fee)
-                 (account_len7_fee)
-                 (account_len6_fee)
-                 (account_len5_fee)
-                 (account_len4_fee)
-                 (account_len3_fee)
-                 (account_len2_fee)
-                 (account_premium_fee)
-                 (account_whitelist_fee)
-                 (delegate_create_fee)
-                 (witness_withdraw_pay_fee)
-                 (transfer_fee)
-                 (limit_order_fee)
-                 (short_order_fee)
-                 (publish_feed_fee)
-                 (asset_create_fee)
-                 (asset_update_fee)
-                 (asset_issue_fee)
-                 (asset_fund_fee_pool_fee)
-                 (asset_settle_fee)
-                 (market_fee)
-                 (transaction_fee)
-                 (data_fee)
-                 (signature_fee)
-                 (global_parameters_update_fee)
-                 (membership_annual_fee)
-                 (membership_lifetime_fee)
-                 (withdraw_permission_update_fee)
-                 (create_bond_offer_fee)
-                 (cancel_bond_offer_fee)
-                 (accept_bond_offer_fee)
-                 (claim_bond_collateral_fee)
-                 (file_storage_fee_per_day)
-                 (vesting_balance_create_fee)
-                 (vesting_balance_withdraw_fee)
-                 (global_settle_fee)
-                 (worker_create_fee)
-                 (worker_delete_fee)
-               )
+            (key_create_fee)
+            (account_create_fee)
+            (account_update_fee)
+            (account_transfer_fee)
+            (account_len8up_fee)
+            (account_len7_fee)
+            (account_len6_fee)
+            (account_len5_fee)
+            (account_len4_fee)
+            (account_len3_fee)
+            (account_len2_fee)
+            (asset_len3_fee)
+            (asset_len4_fee)
+            (asset_len5_fee)
+            (asset_len6_fee)
+            (asset_len7up_fee)
+            (account_whitelist_fee)
+            (delegate_create_fee)
+            (witness_create_fee)
+            (witness_withdraw_pay_fee)
+            (transfer_fee)
+            (limit_order_create_fee)
+            (limit_order_cancel_fee)
+            (call_order_fee)
+            (publish_feed_fee)
+            (asset_create_fee)
+            (asset_update_fee)
+            (asset_issue_fee)
+            (asset_burn_fee)
+            (asset_fund_fee_pool_fee)
+            (asset_settle_fee)
+            (data_fee)
+            (global_parameters_update_fee)
+            (membership_annual_fee)
+            (membership_lifetime_fee)
+            (withdraw_permission_create_fee)
+            (withdraw_permission_update_fee)
+            (withdraw_permission_claim_fee)
+            (withdraw_permission_delete_fee)
+            (vesting_balance_create_fee)
+            (vesting_balance_withdraw_fee)
+            (asset_global_settle_fee)
+            (worker_create_fee)
+            (assert_op_fee)
+            (proposal_create_fee)
+            (proposal_update_fee)
+            (proposal_delete_fee)
+          )
 
 FC_REFLECT( graphene::chain::chain_parameters,
             (current_fees)
@@ -600,7 +620,13 @@ FC_REFLECT( graphene::chain::chain_parameters,
             (allow_non_member_whitelists)
             (witness_pay_per_block)
             (worker_budget_per_day)
+            (max_predicate_opcode)
+            (fee_liquidation_threshold)
+            (accounts_per_fee_scale)
+            (account_fee_scale_bitshifts)
           )
+
+FC_REFLECT_TYPENAME( graphene::chain::share_type )
 
 FC_REFLECT_TYPENAME( graphene::chain::key_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::account_id_type )
@@ -609,15 +635,11 @@ FC_REFLECT_TYPENAME( graphene::chain::force_settlement_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::delegate_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::witness_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::limit_order_id_type )
-FC_REFLECT_TYPENAME( graphene::chain::short_order_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::call_order_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::custom_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::proposal_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::operation_history_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::withdraw_permission_id_type )
-FC_REFLECT_TYPENAME( graphene::chain::bond_offer_id_type )
-FC_REFLECT_TYPENAME( graphene::chain::bond_id_type )
-FC_REFLECT_TYPENAME( graphene::chain::file_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::vesting_balance_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::worker_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::relative_key_id_type )

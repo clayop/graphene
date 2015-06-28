@@ -25,8 +25,13 @@
 #include <graphene/chain/types.hpp>
 #include <graphene/chain/asset.hpp>
 #include <graphene/chain/authority.hpp>
+#include <graphene/chain/predicate.hpp>
+
+/// TODO: why does this file depend upon database objects?
+/// we should remove these headers
 #include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/worker_object.hpp>
+#include <graphene/chain/account_object.hpp>
 
 #include <fc/static_variant.hpp>
 #include <fc/uint128.hpp>
@@ -102,6 +107,48 @@ namespace graphene { namespace chain {
     */
 
    /**
+    *  @brief assert that some conditions are true.
+    *  @ingroup operations
+    *
+    *  This operation performs no changes to the database state, but can but used to verify
+    *  pre or post conditions for other operations.
+    *
+    */
+   struct assert_operation
+   {
+      asset                      fee;
+      account_id_type            fee_paying_account;
+      vector<vector<char>>       predicates;
+      flat_set<account_id_type>  required_auths;
+
+      account_id_type fee_payer()const { return fee_paying_account; }
+      void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            validate()const;
+
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
+   };
+
+   /**
+    * This operation will claim all initial balance objects owned by any of the addresses and
+    * deposit them into the deposit_to_account.  
+    */
+   struct balance_claim_operation
+   {
+      asset             fee;
+      account_id_type   deposit_to_account;
+      flat_set<address> owners;
+      asset             total_claimed;
+
+      account_id_type fee_payer()const { return deposit_to_account; }
+      void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
+      share_type      calculate_fee(const fee_schedule_type& k)const { return 0; }
+      void            validate()const;
+
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), total_claimed-fee); }
+   };
+
+   /**
     *  @brief reserves a new ID to refer to a particular key or address.
     *  @ingroup operations
     */
@@ -113,10 +160,10 @@ namespace graphene { namespace chain {
 
       account_id_type fee_payer()const { return fee_paying_account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set , flat_set<account_id_type>&)const;
-      share_type      calculate_fee( const fee_schedule_type& k )const{ return k.key_create_fee; }
+      share_type      calculate_fee(const fee_schedule_type& k)const{ return k.key_create_fee; }
       void            validate()const;
 
-      void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -132,17 +179,13 @@ namespace graphene { namespace chain {
       account_id_type referrer;
       /// Of the fee split between registrar and referrer, this percentage goes to the referrer. The rest goes to the
       /// registrar.
-      uint8_t         referrer_percent = 0;
+      uint16_t        referrer_percent = 0;
 
       string          name;
       authority       owner;
       authority       active;
-      account_id_type voting_account;
-      object_id_type  memo_key = key_id_type();
 
-      uint16_t        num_witness = 0;
-      uint16_t        num_committee = 0;
-      flat_set<vote_id_type> vote;
+      account_object::options_type options;
 
       account_id_type fee_payer()const { return registrar; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set , flat_set<account_id_type>&)const;
@@ -200,18 +243,24 @@ namespace graphene { namespace chain {
 
    /**
     * @ingroup operations
+    * @brief Update an existing account
+    *
+    * This operation is used to update an existing account. It can be used to update the authorities, or adjust the options on the account.
+    * See @ref account_object::options_type for the options which may be updated.
     */
    struct account_update_operation
    {
-      asset                                   fee;
-      account_id_type                         account;
-      optional<authority>                     owner;
-      optional<authority>                     active;
-      optional<account_id_type>               voting_account;
-      optional<object_id_type>                memo_key;
-      optional<flat_set<vote_id_type>>        vote;
-      uint16_t                                num_witness = 0;
-      uint16_t                                num_committee = 0;
+      asset fee;
+      /// The account to update
+      account_id_type account;
+
+      /// New owner authority. If set, this operation requires owner authority to execute.
+      optional<authority> owner;
+      /// New active authority. If set, this operation requires owner authority to execute.
+      optional<authority> active;
+
+      /// New account options
+      optional<account_object::options_type> new_options;
 
       account_id_type fee_payer()const { return account; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set , flat_set<account_id_type>& owner_auth_set)const;
@@ -288,6 +337,7 @@ namespace graphene { namespace chain {
       asset                                 fee;
       /// The account which owns the delegate. This account pays the fee for this operation.
       account_id_type                       delegate_account;
+      string                                url;
 
       account_id_type fee_payer()const { return delegate_account; }
       void get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
@@ -308,15 +358,16 @@ namespace graphene { namespace chain {
       asset             fee;
       /// The account which owns the delegate. This account pays the fee for this operation.
       account_id_type   witness_account;
+      string            url;
       key_id_type       block_signing_key;
       secret_hash_type  initial_secret;
 
       account_id_type fee_payer()const { return witness_account; }
       void get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const;
+      share_type calculate_fee(const fee_schedule_type& k)const;
 
-      void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -334,7 +385,7 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return to_account; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void       validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const;
+      share_type calculate_fee(const fee_schedule_type& k)const;
 
       void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
       {
@@ -363,7 +414,7 @@ namespace graphene { namespace chain {
       void get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
       { active_auth_set.insert(account_id_type()); }
       void validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const;
+      share_type calculate_fee(const fee_schedule_type& k)const;
       void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
    };
 
@@ -441,23 +492,21 @@ namespace graphene { namespace chain {
     */
    struct transfer_operation
    {
-      /** paid by the from account, may be of any asset for which there is a funded fee pool
-       **/
-      asset           fee;
+      asset fee;
+      /// Account to transfer asset from
       account_id_type from;
+      /// Account to transfer asset to
       account_id_type to;
-      /** the amount and asset type that will be withdrawn from account "from" and added to account "to"
-       *
-       **/
-      asset           amount;
+      /// The amount of asset to transfer from @ref from to @ref to
+      asset amount;
 
-      /** user provided data encrypted to the memo key of the "to" account */
-      optional<memo_data>  memo;
+      /// User provided data encrypted to the memo key of the "to" account
+      optional<memo_data> memo;
 
       account_id_type fee_payer()const { return from; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void       validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const;
+      share_type calculate_fee(const fee_schedule_type& k)const;
       void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
       {
          acc.adjust( fee_payer(), -fee );
@@ -465,182 +514,6 @@ namespace graphene { namespace chain {
          acc.adjust( to, amount );
       }
    };
-   /**
-    * @defgroup stealth Stealth Transfer
-    * @brief Operations related to stealth transfer of value
-    *
-    * Stealth Transfers enable users to maintain their finanical privacy against even
-    * though all transactions are public.  Every account has three balances:
-    *
-    * 1. Public Balance - every can see the balance changes and the parties involved
-    * 2. Blinded Balance - everyone can see who is transacting but not the amounts involved
-    * 3. Stealth Balance - both the amounts and parties involved are obscured
-    *
-    * Account owners may set a flag that allows their account to receive(or not) transfers of these kinds
-    * Asset issuers can enable or disable the use of each of these types of accounts.
-    *
-    * Using the "temp account" which has no permissions required, users can transfer a
-    * stealth balance to the temp account and then use the temp account to register a new
-    * account.  In this way users can use stealth funds to create anonymous accounts with which
-    * they can perform other actions that are not compatible with blinded balances (such as market orders)
-    *
-    * @section referral_program Referral Progam
-    *
-    * Stealth transfers that do not specify any account id cannot pay referral fees so 100% of the
-    * transaction fee is paid to the network.
-    *
-    * @section transaction_fees Fees
-    *
-    * Stealth transfers can have an arbitrarylly large size and therefore the transaction fee for
-    * stealth transfers is based purley on the data size of the transaction.
-    */
-   ///@{
-
-   /**
-    *  @ingroup stealth
-    *  This data is encrypted and stored in the
-    *  encrypted memo portion of the blind output.
-    */
-   struct blind_memo
-   {
-      account_id_type     from;
-      share_type          amount;
-      string              message;
-      /** set to the first 4 bytes of the shared secret
-       * used to encrypt the memo.  Used to verify that
-       * decryption was successful.
-       */
-      uint32_t            check= 0;
-   };
-
-   /**
-    *  @ingroup stealth
-    */
-   struct blind_input
-   {
-      fc::ecc::commitment_type                commitment;
-      /** provided to maintain the invariant that all authority
-       * required by an operation is explicit in the operation.  Must
-       * match blinded_balance_id->owner
-       */
-      static_variant<address,account_id_type> owner;
-   };
-
-   /**
-    *  @class blind_output
-    *  @brief Defines data required to create a new blind commitment
-    *  @ingroup stealth
-    *
-    *  The blinded output that must be proven to be greater than 0
-    */
-   struct blind_output
-   {
-      fc::ecc::commitment_type                commitment;
-      /** only required if there is more than one blind output */
-      range_proof_type                        range_proof;
-      static_variant<address,account_id_type> owner;
-      public_key_type                         one_time_key;
-      /** encrypted via aes with shared secret derived from
-       * one_time_key and (owner or owner.memo_key)
-       */
-      vector<char>                            encrypted_memo;
-   };
-
-   /**
-    *  @class transfer_to_blind_operation
-    *  @ingroup stealth
-    *  @brief Converts public account balance to a blinded or stealth balance
-    */
-   struct transfer_to_blind_operation
-   {
-      asset                 fee;
-      asset                 amount;
-      account_id_type       from;
-      vector<blind_output>  outputs;
-
-      account_id_type fee_payer()const;
-      void            get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const;
-      void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const;
-   };
-
-   /**
-    *  @ingroup stealth
-    *  @brief Converts blinded/stealth balance to a public account balance
-    */
-   struct transfer_from_blind_operation
-   {
-      asset                 fee;
-      asset                 amount;
-      account_id_type       to;
-      vector<blind_input>   inputs;
-
-      account_id_type fee_payer()const;
-      void            get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const;
-      void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const;
-   };
-
-   /**
-    *  @ingroup stealth
-    *  @brief Transfers from blind to blind
-    *
-    *  There are two ways to transfer value while maintaining privacy:
-    *  1. account to account with amount kept secret
-    *  2. stealth transfers with amount sender/receiver kept secret
-    *
-    *  When doing account to account transfers, everyone with access to the
-    *  memo key can see the amounts, but they will not have access to the funds.
-    *
-    *  When using stealth transfers the same key is used for control and reading
-    *  the memo.
-    *
-    *  This operation is more expensive than a normal transfer and has
-    *  a fee proportional to the size of the operation.
-    *
-    *  All assets in a blind transfer must be of the same type: fee.asset_id
-    *  The fee_payer is the temp account and can be funded from the blinded values.
-    *
-    *  Using this operation you can transfer from an account and/or blinded balances
-    *  to an account and/or blinded balances.
-    *
-    *  Stealth Transfers:
-    *
-    *  Assuming Receiver has key pair R,r and has shared public key R with Sender
-    *  Assuming Sender has key pair S,s
-    *  Generate one time key pair  O,o  as s.child(nonce) where nonce can be inferred from transaction
-    *  Calculate secret V = o*R
-    *  blinding_factor = sha256(V)
-    *  memo is encrypted via aes of V
-    *  owner = R.child(sha256(blinding_factor))
-    *
-    *  Sender gives Receiver output ID to complete the payment.
-    *
-    *  This process can also be used to send money to a cold wallet without having to
-    *  pre-register any accounts.
-    *
-    *  Outputs are assigned the same IDs as the inputs until no more input IDs are available,
-    *  in which case a the return value will be the *first* ID allocated for an output.  Additional
-    *  output IDs are allocated sequentially thereafter.   If there are fewer outputs than inputs
-    *  then the input IDs are freed and never used again.
-    */
-   struct blind_transfer_operation
-   {
-
-      asset                 fee;
-      account_id_type       fee_payer_id;
-      vector<blind_input>   inputs;
-      vector<blind_output>  outputs;
-
-      account_id_type fee_payer()const;
-      void            get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const;
-      void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const;
-   };
-   ///@} endgroup stealth
 
    /**
     * @ingroup operations
@@ -671,7 +544,7 @@ namespace graphene { namespace chain {
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
       share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -694,8 +567,8 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return issuer; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -722,8 +595,8 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
          acc.adjust( fee_payer(), -fee );
          acc.adjust( account, -amount );
@@ -743,11 +616,11 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return from_account; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void       validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const;
-      void       get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type calculate_fee(const fee_schedule_type& k)const;
+      void       get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( fee_payer(), -amount );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(fee_payer(), -amount);
       }
    };
 
@@ -783,8 +656,8 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return issuer; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -811,8 +684,8 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return issuer; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -843,10 +716,9 @@ namespace graphene { namespace chain {
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
       { active_auth_set.insert(fee_payer()); }
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const
-      { return k.asset_update_fee; }
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-      { acc.adjust( fee_payer(), -fee ); }
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
+      { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -873,10 +745,10 @@ namespace graphene { namespace chain {
       price_feed             feed;
 
       account_id_type fee_payer()const { return publisher; }
-      void       get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const;
+      void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void       validate()const;
       share_type calculate_fee( const fee_schedule_type& k )const;
-      void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset() )const { acc.adjust( fee_payer(), -fee ); }
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -896,9 +768,9 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return issuer; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-      { acc.adjust( fee_payer(), -fee ); acc.adjust(issue_to_account, asset_to_issue); }
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
+      { acc.adjust(fee_payer(), -fee); acc.adjust(issue_to_account, asset_to_issue); }
    };
 
    /**
@@ -916,11 +788,11 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return payer; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( fee_payer(), -amount_to_burn );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(fee_payer(), -amount_to_burn);
       }
    };
 
@@ -948,31 +820,29 @@ namespace graphene { namespace chain {
       account_id_type seller;
       asset           amount_to_sell;
       asset           min_to_receive;
-      /**
-       *  This order should expire if not filled by expiration
-       */
-      time_point_sec  expiration = time_point_sec::maximum();
 
-      /** if this flag is set the entire order must be filled or
-       * the operation is rejected.
-       */
-      bool            fill_or_kill = false;
+      /// The order will be removed from the books if not filled by expiration
+      /// Upon expiration, all unsold asset will be returned to seller
+      time_point_sec expiration = time_point_sec::maximum();
+
+      /// If this flag is set the entire order must be filled or the operation is rejected
+      bool fill_or_kill = false;
 
       pair<asset_id_type,asset_id_type> get_market()const
       {
          return amount_to_sell.asset_id < min_to_receive.asset_id ?
-                std::make_pair( amount_to_sell.asset_id, min_to_receive.asset_id ) :
-                std::make_pair( min_to_receive.asset_id, amount_to_sell.asset_id );
+                std::make_pair(amount_to_sell.asset_id, min_to_receive.asset_id) :
+                std::make_pair(min_to_receive.asset_id, amount_to_sell.asset_id);
       }
       account_id_type fee_payer()const { return seller; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
+      share_type      calculate_fee(const fee_schedule_type& k)const;
       price           get_price()const { return amount_to_sell / min_to_receive; }
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( seller, -amount_to_sell );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(seller, -amount_to_sell);
       }
    };
 
@@ -986,103 +856,19 @@ namespace graphene { namespace chain {
     */
    struct limit_order_cancel_operation
    {
+      asset               fee;
       limit_order_id_type order;
       /** must be order->seller */
       account_id_type     fee_paying_account;
-      asset               fee;
 
       account_id_type fee_payer()const { return fee_paying_account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( fee_payer(), result.get<asset>() );
-      }
-   };
-
-   /**
-    *  @ingroup operations
-    *
-    *  Define a new short order, if it is filled it will
-    *  be merged with existing call orders for the same
-    *  account.  If maintenance_collateral_ratio is set
-    *  it will update any existing open call orders to
-    *  use the new maintenance level.
-    *
-    *  When shorting you specify the total amount to sell
-    *  and the amount of collateral along with the initial
-    *  ratio.  The price it will sell at is (amount_to_sell/(collateral*initial_collateral_ratio/2000))
-    */
-   struct short_order_create_operation
-   {
-      /// The account placing a short order (this account must sign the transaction)
-      account_id_type seller;
-      /// The amount of market-issued asset to short sell
-      asset           amount_to_sell;
-      /// The fee paid by seller
-      asset           fee;
-      /// The amount of collateral to withdraw from the seller
-      asset           collateral;
-      /// Fixed point representation of initial collateral ratio, with three digits of precision
-      /// Must be greater than or equal to the minimum specified by price feed
-      uint16_t        initial_collateral_ratio    = GRAPHENE_DEFAULT_INITIAL_COLLATERAL_RATIO;
-      /// Fixed point representation of maintenance collateral ratio, with three digits of precision
-      /// Must be greater than or equal to the minimum specified by price feed
-      uint16_t        maintenance_collateral_ratio = GRAPHENE_DEFAULT_MAINTENANCE_COLLATERAL_RATIO;
-      /// Expiration time for this order. Any unfilled portion of this order which is on the books at or past this time
-      /// will automatically be canceled.
-      time_point_sec  expiration = time_point_sec::maximum();
-
-      account_id_type fee_payer()const { return seller; }
-      void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
-      void       validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const;
-
-      pair<asset_id_type,asset_id_type> get_market()const
-      {
-         return amount_to_sell.asset_id < collateral.asset_id ?
-                std::make_pair( amount_to_sell.asset_id, collateral.asset_id ) :
-                std::make_pair( collateral.asset_id, amount_to_sell.asset_id );
-      }
-
-      /** convention: amount_to_sell / amount_to_receive */
-      price      sell_price()const { return ~price::call_price(amount_to_sell, collateral, initial_collateral_ratio); }
-
-      /** convention: amount_to_sell / amount_to_receive means we are
-       * selling collateral to receive debt
-       **/
-      price call_price() const { return price::call_price(amount_to_sell, collateral, maintenance_collateral_ratio); }
-
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-      {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( seller, -collateral );
-      }
-   };
-
-   /**
-    * @ingroup operations
-    * Cancel the short order and return the balance to the
-    * order->seller account.
-    */
-   struct short_order_cancel_operation
-   {
-      short_order_id_type order;
-      account_id_type     fee_paying_account; ///< Must be order->seller
-      asset               fee; ///< paid by order->seller
-
-      account_id_type fee_payer()const { return fee_paying_account; }
-      void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
-      void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result )const
-      {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( fee_payer(), result.get<asset>() );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(fee_payer(), result.get<asset>());
       }
    };
 
@@ -1090,34 +876,31 @@ namespace graphene { namespace chain {
    /**
     *  @ingroup operations
     *
-    *  This operation can be used to add collateral, cover, and adjust the margin call price with a new maintenance
-    *  collateral ratio.
+    *  This operation can be used to add collateral, cover, and adjust the margin call price for a particular user.
     *
-    *  The only way to "cancel" a call order is to pay off the balance due. The order is invalid if the payoff amount
-    *  is greater than the amount due.
+    *  For prediction markets the collateral and debt must always be equal.
     *
-    *  @note the call_order_id is implied by the funding_account and assets involved. This implies that the assets must
-    *  have appropriate asset_ids, even if the amount is zero.
+    *  This operation will fail if it would trigger a margin call that couldn't be filled.  If the margin call hits
+    *  the call price limit then it will fail if the call price is above the settlement price.
     *
     *  @note this operation can be used to force a market order using the collateral without requiring outside funds.
     */
    struct call_order_update_operation
    {
-      account_id_type     funding_account; ///< pays fee, collateral, and cover
       asset               fee; ///< paid by funding_account
-      asset               collateral_to_add; ///< the amount of collateral to add to the margin position
-      asset               amount_to_cover; ///< the amount of the debt to be paid off
-      uint16_t            maintenance_collateral_ratio = 0; ///< 0 means don't change, 1000 means feed
+      account_id_type     funding_account; ///< pays fee, collateral, and cover
+      asset               delta_collateral; ///< the amount of collateral to add to the margin position
+      asset               delta_debt; ///< the amount of the debt to be paid off, may be negative to issue new debt
 
       account_id_type fee_payer()const { return funding_account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( funding_account, -collateral_to_add );
-         acc.adjust( funding_account, -amount_to_cover );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(funding_account, -delta_collateral);
+         acc.adjust(funding_account, delta_debt);
       }
    };
 
@@ -1177,9 +960,9 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return fee_paying_account; }
       void       get_required_auth( flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& )const;
       void       validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const { return 0; }
-
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type calculate_fee(const fee_schedule_type& k)const;
+      void       get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
+      { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -1215,8 +998,8 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return fee_paying_account; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& owner_auth_set)const;
       void       validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const { return 0; }
-      void       get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type calculate_fee(const fee_schedule_type& k)const;
+      void       get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -1240,8 +1023,9 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return fee_paying_account; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& owner_auth_set)const;
       void       validate()const;
-      share_type calculate_fee( const fee_schedule_type& k )const { return 0; }
-      void       get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type calculate_fee(const fee_schedule_type& k)const
+      { return k.proposal_delete_fee; }
+      void       get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
    ///@}
 
@@ -1271,10 +1055,12 @@ namespace graphene { namespace chain {
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const
       { active_auth_set.insert(fee_payer()); }
       void            validate()const { FC_ASSERT( !"virtual operation" ); }
-      share_type      calculate_fee( const fee_schedule_type& k )const { return share_type(); }
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const {
-         // acc.adjust( fee_payer(), -fee );  fee never actually entered the account, this is a virtual operation
-         acc.adjust( account_id, receives );
+      share_type      calculate_fee(const fee_schedule_type& k)const
+      // This is a virtual operation; there is no fee
+      { return 0; }
+
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const {
+         acc.adjust(account_id, receives);
       }
    };
 
@@ -1316,8 +1102,8 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return withdraw_from_account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -1352,8 +1138,8 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return withdraw_from_account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust( fee_payer(), -fee ); }
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
    };
 
    /**
@@ -1387,12 +1173,12 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return withdraw_to_account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( withdraw_to_account, amount_to_withdraw );
-         acc.adjust( withdraw_from_account, -amount_to_withdraw );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(withdraw_to_account, amount_to_withdraw);
+         acc.adjust(withdraw_from_account, -amount_to_withdraw);
       }
    };
 
@@ -1417,204 +1203,30 @@ namespace graphene { namespace chain {
       account_id_type fee_payer()const { return withdraw_from_account; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void            validate()const;
-      share_type      calculate_fee( const fee_schedule_type& k )const;
-      void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void            get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
+         acc.adjust(fee_payer(), -fee);
       }
    };
 
-   /**
-    *  @brief create/update the contents of a file.
-    *
-    *  Any account may pay a fee and write no data to extend the lease seconds
-    *  on a file.
-    *
-    *  If the file size increasees, the current lease_seconds will be adjusted downward to maintain
-    *  the same byte-days-leased.   Then any new leased seconds will be added based upon the
-    *  new file size.
-    *
-    *  @see file_object
-    */
-   struct file_write_operation
+   struct linear_vesting_policy_initializer
    {
-      public:
-         /**
-          *  The fee charges is proportional to @ref file_size * @ref lease_seconds
-          */
-         asset                   fee;
-         /**
-          * THe account that is paying the update fee
-          */
-         account_id_type         payer;
-
-         /** file_id 0 indicates a new file should be created */
-         file_id_type            file_id;
-
-         /** may read/write accoding to flags, write permission is required to change owner/group/flags */
-         account_id_type         owner;
-
-         /** may read/write according fo flags, but may not update flags or owner */
-         account_id_type         group;
-
-         /**
-          *  Must be less than or equal to 0x2f
-          */
-         uint8_t                 flags = 0;
-
-         /**
-          *  If the file doesn't exist, it will be intialized to file_size with 0
-          *  before writing data.
-          *
-          *  @pre  data.size() + offset <=  2^16
-          */
-         uint16_t                offset = 0;
-         vector<char>            data;
-
-         /**
-          *  The length of time to extend the lease on the file, must be less
-          *  than 10 years.
-          */
-         uint32_t                lease_seconds = 0;
-
-         /**
-          * File size must be greater than 0
-          */
-         uint16_t                file_size = 0;
-
-         /**
-          *  If file_id is not 0, then precondition checksum verifies that
-          *  the file contents are as expected prior to writing data.
-          */
-         optional<checksum_type> precondition_checksum;
-
-         account_id_type fee_payer()const { return payer; }
-         void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const { active_auth_set.insert(fee_payer()); }
-         void            validate()const;
-         share_type      calculate_fee( const fee_schedule_type& k )const;
-
-         void            get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-         {
-            acc.adjust( fee_payer(), -fee );
-         }
+      /** while vesting begins on begin_date, none may be claimed before the start_claim time */
+      fc::time_point_sec start_claim;
+      fc::time_point_sec begin_date;
+      uint32_t           vesting_seconds = 0;
    };
 
-   /**
-    * @ingroup operations
-    *
-    * Bond offers are objects that exist on the blockchain and can be
-    * filled in full or in part by someone using the accept_bond_offer
-    * operation. When the offer is accepted a new bond_object is
-    * created that defines the terms of the loan.
-    *
-    *  @return bond_offer_id
-    */
-   struct bond_create_offer_operation
+   struct cdd_vesting_policy_initializer
    {
-      asset                   fee;
-      account_id_type         creator;
-      bool                    offer_to_borrow = false; ///< Offer to borrow if true, and offer to lend otherwise
-      asset                   amount; ///< Amount to lend or secure depending on above
-      share_type              min_match; ///< asset id same as amount.asset_id and sets the minimum match that will be accepted
-      price                   collateral_rate; ///< To derive amount of collateral or principle based on above
-      /** after this time the lender can let the loan float or collect the collateral at will */
-      uint32_t                min_loan_period_sec = 0; ///< the earliest the loan may be paid off
-      uint32_t                loan_period_sec = 0;
-      uint16_t                interest_apr = 0; ///< MAX_INTEREST_APR == 100% and is max value
-
-      account_id_type   fee_payer()const { return creator; }
-      void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
-      void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-      {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( creator, -amount );
-      }
+      /** while coindays may accrue over time, none may be claimed before the start_claim time */
+      fc::time_point_sec start_claim;
+      uint32_t           vesting_seconds = 0;
+      cdd_vesting_policy_initializer( uint32_t vest_sec = 0, fc::time_point_sec sc = fc::time_point_sec() ):start_claim(sc),vesting_seconds(vest_sec){}
    };
 
-   /**
-    * @ingroup operations
-    *  Subtracts refund from bond_offer.amount and frees bond_offer if refund == bond_offer.amount
-    */
-   struct bond_cancel_offer_operation
-   {
-      asset                 fee;
-      account_id_type       creator;
-      bond_offer_id_type    offer_id;
-      asset                 refund;
-
-      account_id_type   fee_payer()const { return creator; }
-      void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
-      void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-      {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( creator, refund );
-      }
-   };
-
-   /**
-    * @ingroup operations
-    *  @return new bond_id
-    */
-   struct bond_accept_offer_operation
-   {
-      asset               fee;
-      account_id_type     claimer;
-      account_id_type     lender;
-      account_id_type     borrower; ///< included in case of offer to borrow, because borrower will receive funds
-      bond_offer_id_type  offer_id;
-      asset               amount_borrowed;       ///< should equal amount_collateral * offer_id->collateral_rate
-      asset               amount_collateral; ///< should equal amount_borrowed * offer_id->collateral_rate
-
-      account_id_type   fee_payer()const { return claimer; }
-      void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
-      void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-      {
-         acc.adjust( fee_payer(), -fee );
-         if( claimer == lender )
-            acc.adjust( claimer, -amount_borrowed );
-         else // claimer == borrower
-            acc.adjust( claimer, -amount_collateral );
-         acc.adjust( borrower, amount_borrowed );
-      }
-   };
-
-   /**
-    * @ingroup operations
-    *  After the loan period the lender can claim
-    *  the collateral, prior to the loan period expiring
-    *  the borrower can claim it by paying off the loan
-    */
-   struct bond_claim_collateral_operation
-   {
-      asset            fee;
-      account_id_type  claimer; ///< must be bond_id->lender or bond_id->borrower
-      account_id_type  lender; ///< must be bond_id->lender
-      bond_id_type     bond_id;
-      asset            payoff_amount;
-
-      /** the borrower can claim a percentage of the collateral propotional to the
-       * percentage of the debt+interest that was paid off
-       */
-      asset            collateral_claimed;
-
-      account_id_type   fee_payer()const { return claimer; }
-      void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
-      void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
-      {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( claimer, -payoff_amount );
-         acc.adjust( claimer, collateral_claimed );
-         acc.adjust( lender, payoff_amount );
-      }
-   };
+   typedef fc::static_variant<linear_vesting_policy_initializer, cdd_vesting_policy_initializer> vesting_policy_initializer;
 
    /**
     * @brief Create a vesting balance.
@@ -1635,22 +1247,23 @@ namespace graphene { namespace chain {
     */
    struct vesting_balance_create_operation
    {
-      asset            fee;
-      account_id_type  creator;         ///< Who provides funds initially
-      account_id_type  owner;           ///< Who is able to withdraw the balance
-      asset            amount;
-      uint32_t         vesting_seconds;
+      asset                       fee;
+      account_id_type             creator; ///< Who provides funds initially
+      account_id_type             owner; ///< Who is able to withdraw the balance
+      asset                       amount;
+      vesting_policy_initializer  policy;
 
       account_id_type   fee_payer()const { return creator; }
       void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type        calculate_fee(const fee_schedule_type& k)const;
+      void              get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( creator, -amount );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(creator, -amount);
       }
    };
+
 
    /**
     * @brief Withdraw from a vesting balance.
@@ -1665,17 +1278,17 @@ namespace graphene { namespace chain {
    {
       asset                   fee;
       vesting_balance_id_type vesting_balance;
-      account_id_type         owner;              ///< Must be vesting_balance.owner
+      account_id_type         owner; ///< Must be vesting_balance.owner
       asset                   amount;
 
       account_id_type   fee_payer()const { return owner; }
       void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type        calculate_fee(const fee_schedule_type& k)const;
+      void              get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
-         acc.adjust( owner, amount );
+         acc.adjust(fee_payer(), -fee);
+         acc.adjust(owner, amount);
       }
    };
 
@@ -1713,16 +1326,18 @@ namespace graphene { namespace chain {
       time_point_sec       work_begin_date;
       time_point_sec       work_end_date;
       share_type           daily_pay;
+      string               name;
+      string               url;
       /// This should be set to the initializer appropriate for the type of worker to be created.
       worker_initializer   initializer;
 
       account_id_type   fee_payer()const { return owner; }
       void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type        calculate_fee(const fee_schedule_type& k)const;
+      void              get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
+         acc.adjust(fee_payer(), -fee);
       }
 
    };
@@ -1746,10 +1361,10 @@ namespace graphene { namespace chain {
       account_id_type   fee_payer()const { return payer; }
       void              get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
       void              validate()const;
-      share_type        calculate_fee( const fee_schedule_type& k )const;
-      void              get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      share_type        calculate_fee(const fee_schedule_type& k)const;
+      void              get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
-         acc.adjust( fee_payer(), -fee );
+         acc.adjust(fee_payer(), -fee);
       }
    };
 
@@ -1761,9 +1376,7 @@ namespace graphene { namespace chain {
    typedef fc::static_variant<
             transfer_operation,
             limit_order_create_operation,
-            short_order_create_operation,
             limit_order_cancel_operation,
-            short_order_cancel_operation,
             call_order_update_operation,
             key_create_operation,
             account_create_operation,
@@ -1793,15 +1406,12 @@ namespace graphene { namespace chain {
             withdraw_permission_delete_operation,
             fill_order_operation,
             global_parameters_update_operation,
-            file_write_operation,
             vesting_balance_create_operation,
             vesting_balance_withdraw_operation,
-            bond_create_offer_operation,
-            bond_cancel_offer_operation,
-            bond_accept_offer_operation,
-            bond_claim_collateral_operation,
             worker_create_operation,
-            custom_operation
+            custom_operation,
+            assert_operation,
+            balance_claim_operation
          > operation;
 
    /// @} // operations group
@@ -1939,13 +1549,11 @@ FC_REFLECT( graphene::chain::key_create_operation,
 FC_REFLECT( graphene::chain::account_create_operation,
             (fee)(registrar)
             (referrer)(referrer_percent)
-            (name)
-            (owner)(active)(voting_account)(memo_key)
-            (num_witness)(num_committee)(vote)
+            (name)(owner)(active)(options)
           )
 
 FC_REFLECT( graphene::chain::account_update_operation,
-            (fee)(account)(owner)(active)(voting_account)(memo_key)(num_witness)(num_committee)(vote)
+            (fee)(account)(owner)(active)(new_options)
           )
 FC_REFLECT( graphene::chain::account_upgrade_operation, (fee)(account_to_upgrade)(upgrade_to_lifetime_member) )
 
@@ -1957,9 +1565,9 @@ FC_REFLECT( graphene::chain::account_whitelist_operation, (fee)(authorizing_acco
 FC_REFLECT( graphene::chain::account_transfer_operation, (fee)(account_id)(new_owner) )
 
 FC_REFLECT( graphene::chain::delegate_create_operation,
-            (fee)(delegate_account) )
+            (fee)(delegate_account)(url) )
 
-FC_REFLECT( graphene::chain::witness_create_operation, (fee)(witness_account)(block_signing_key)(initial_secret) )
+FC_REFLECT( graphene::chain::witness_create_operation, (fee)(witness_account)(url)(block_signing_key)(initial_secret) )
 FC_REFLECT( graphene::chain::witness_withdraw_pay_operation, (fee)(from_witness)(to_account)(amount) )
 
 FC_REFLECT( graphene::chain::limit_order_create_operation,
@@ -1967,10 +1575,7 @@ FC_REFLECT( graphene::chain::limit_order_create_operation,
           )
 FC_REFLECT( graphene::chain::fill_order_operation, (fee)(order_id)(account_id)(pays)(receives) )
 FC_REFLECT( graphene::chain::limit_order_cancel_operation,(fee)(fee_paying_account)(order) )
-FC_REFLECT( graphene::chain::short_order_cancel_operation,(fee)(fee_paying_account)(order) )
-FC_REFLECT( graphene::chain::short_order_create_operation, (fee)(seller)(amount_to_sell)(collateral)
-            (initial_collateral_ratio)(maintenance_collateral_ratio)(expiration) )
-FC_REFLECT( graphene::chain::call_order_update_operation, (fee)(funding_account)(collateral_to_add)(amount_to_cover)(maintenance_collateral_ratio) )
+FC_REFLECT( graphene::chain::call_order_update_operation, (fee)(funding_account)(delta_collateral)(delta_debt) )
 
 FC_REFLECT( graphene::chain::transfer_operation,
             (fee)(from)(to)(amount)(memo) )
@@ -2028,34 +1633,21 @@ FC_REFLECT( graphene::chain::withdraw_permission_claim_operation, (fee)(withdraw
 FC_REFLECT( graphene::chain::withdraw_permission_delete_operation, (fee)(withdraw_from_account)(authorized_account)
             (withdrawal_permission) )
 
-FC_REFLECT( graphene::chain::file_write_operation, (fee)(payer)(file_id)(owner)(group)(flags)(offset)(data)(lease_seconds)(file_size)(precondition_checksum) )
-
-FC_REFLECT( graphene::chain::bond_create_offer_operation, (fee)(creator)(offer_to_borrow)(amount)(min_match)(collateral_rate)(min_loan_period_sec)(loan_period_sec)(interest_apr) )
-FC_REFLECT( graphene::chain::bond_cancel_offer_operation, (fee)(creator)(offer_id)(refund) )
-FC_REFLECT( graphene::chain::bond_accept_offer_operation, (fee)(claimer)(lender)(borrower)(offer_id)(amount_borrowed)(amount_collateral) )
-FC_REFLECT( graphene::chain::bond_claim_collateral_operation, (fee)(claimer)(lender)(bond_id)(payoff_amount)(collateral_claimed) )
-
-FC_REFLECT( graphene::chain::vesting_balance_create_operation, (fee)(creator)(owner)(amount)(vesting_seconds) )
+FC_REFLECT( graphene::chain::vesting_balance_create_operation, (fee)(creator)(owner)(amount)(policy) )
 FC_REFLECT( graphene::chain::vesting_balance_withdraw_operation, (fee)(vesting_balance)(owner)(amount) )
 
 FC_REFLECT( graphene::chain::worker_create_operation,
-            (fee)(owner)(work_begin_date)(work_end_date)(daily_pay)(initializer) )
+            (fee)(owner)(work_begin_date)(work_end_date)(daily_pay)(name)(url)(initializer) )
 
 FC_REFLECT( graphene::chain::custom_operation, (fee)(payer)(required_auths)(id)(data) )
-FC_REFLECT( graphene::chain::void_result, )
+FC_REFLECT( graphene::chain::assert_operation, (fee)(fee_paying_account)(predicates)(required_auths) )
 
-FC_REFLECT( graphene::chain::blind_memo,
-            (from)(amount)(message)(check) )
-FC_REFLECT( graphene::chain::blind_input,
-            (commitment)(owner) )
-FC_REFLECT( graphene::chain::blind_output,
-            (commitment)(range_proof)(owner)(one_time_key)(encrypted_memo) )
-FC_REFLECT( graphene::chain::transfer_to_blind_operation,
-            (fee)(amount)(from)(outputs) )
-FC_REFLECT( graphene::chain::transfer_from_blind_operation,
-            (fee)(amount)(to)(inputs) )
-FC_REFLECT( graphene::chain::blind_transfer_operation,
-            (fee)(fee_payer_id)(inputs)(outputs) )
+FC_REFLECT( graphene::chain::void_result, )
+FC_REFLECT( graphene::chain::balance_claim_operation, (fee)(deposit_to_account)(owners)(total_claimed) )
 
 FC_REFLECT_TYPENAME( graphene::chain::operation )
+FC_REFLECT_TYPENAME( graphene::chain::operation_result )
 FC_REFLECT_TYPENAME( fc::flat_set<graphene::chain::vote_id_type> )
+FC_REFLECT(graphene::chain::linear_vesting_policy_initializer, (start_claim)(begin_date)(vesting_seconds) )
+FC_REFLECT(graphene::chain::cdd_vesting_policy_initializer, (start_claim)(vesting_seconds) )
+FC_REFLECT_TYPENAME( graphene::chain::vesting_policy_initializer )
