@@ -579,43 +579,48 @@ BOOST_FIXTURE_TEST_CASE( limit_order_expiration, database_fixture )
 } FC_LOG_AND_RETHROW() }
 
 BOOST_FIXTURE_TEST_CASE( double_sign_check, database_fixture )
-{ try {
-   generate_block();
-   const auto& from = account_id_type()(db);
-   ACTOR(to);
-   asset amount(1000);
+{
+   try
+   {
+      generate_block();
 
-   trx.set_expiration(db.head_block_time() + fc::minutes(1));
-   trx.operations.push_back(transfer_operation({ asset(), from.id, to.id, amount, memo_data() }));
-   for( auto& op : trx.operations ) op.visit(operation_set_fee(db.current_fee_schedule()));
-   trx.validate();
+      ACTORS((alice)(bob)(bogus));
 
-   db.push_transaction(trx, ~0);
+      BOOST_TEST_MESSAGE( "Give Alice some money" );
+      transfer(genesis_account, alice_id, asset(10000));
+      generate_block();
 
-   trx.operations.clear();
-   trx.operations.push_back(transfer_operation({ asset(), to.id, from.id, amount, memo_data() }));
-   for( auto& op : trx.operations ) op.visit(operation_set_fee(db.current_fee_schedule()));
-   trx.validate();
+      BOOST_TEST_MESSAGE( "Generate xfer tx" );
 
-   BOOST_TEST_MESSAGE( "Verify that not-signing causes an exception" );
-   BOOST_REQUIRE_THROW( db.push_transaction(trx, 0), fc::exception );
+      transfer_operation xfer_op;
+      xfer_op.from = alice_id;
+      xfer_op.to = bob_id;
+      xfer_op.amount = asset(1000);
 
-   BOOST_TEST_MESSAGE( "Verify that double-signing causes an exception" );
-   trx.sign(to_private_key);
-   trx.sign(to_private_key);
-   BOOST_REQUIRE_THROW( db.push_transaction(trx, 0), fc::exception );
+      signed_transaction xfer_tx;
+      xfer_tx.operations.push_back( xfer_op );
+      xfer_tx.set_expiration( db.head_block_id(), 0x1000 );
 
-   BOOST_TEST_MESSAGE( "Verify that signing with an extra, unused key fails" );
-   trx.signatures.pop_back();
-   trx.sign(generate_private_key("bogus"));
-   BOOST_REQUIRE_THROW( db.push_transaction(trx, 0), fc::exception );
+      BOOST_TEST_MESSAGE( "Verify that not-signing causes an exception" );
+      BOOST_REQUIRE_THROW( db.push_transaction(xfer_tx, 0 ), fc::exception );
 
-   BOOST_TEST_MESSAGE( "Verify that signing once with the proper key passes" );
-   trx.signatures.pop_back();
-   db.push_transaction(trx, 0);
-   trx.sign(to_private_key);
+      BOOST_TEST_MESSAGE( "Require exception on double-signing" );
+      sign( xfer_tx, alice_key_id, alice_private_key );
+      sign( xfer_tx, alice_key_id, alice_private_key );
+      BOOST_REQUIRE_THROW( PUSH_TX( db, xfer_tx, 0 ), fc::exception );
 
-} FC_LOG_AND_RETHROW() }
+      BOOST_TEST_MESSAGE( "Require exception on irrelevant signature" );
+      xfer_tx.signatures.pop_back();
+      sign( xfer_tx, bogus_key_id, bogus_private_key );
+      BOOST_REQUIRE_THROW( PUSH_TX( db, xfer_tx, 0 ), fc::exception );
+
+      BOOST_TEST_MESSAGE( "Require no exception with only correct signature" );
+      xfer_tx.signatures.pop_back();
+      PUSH_TX( db, xfer_tx, 0 );
+
+   }
+   FC_LOG_AND_RETHROW()
+}
 
 BOOST_FIXTURE_TEST_CASE( change_block_interval, database_fixture )
 { try {
@@ -910,7 +915,6 @@ BOOST_FIXTURE_TEST_CASE( tapos_rollover, database_fixture )
    try
    {
       ACTORS((alice)(bob));
-      const auto& core   = asset_id_type()(db);
 
       BOOST_TEST_MESSAGE( "Give Alice some money" );
       transfer(genesis_account, alice_id, asset(10000));
