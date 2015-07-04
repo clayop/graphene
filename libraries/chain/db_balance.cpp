@@ -38,12 +38,6 @@ asset database::get_balance(const account_object& owner, const asset_object& ass
    return get_balance(owner.get_id(), asset_obj.get_id());
 }
 
-// TODO: this method should be removed
-asset database::get_balance( const account_object* owner, const asset_object* asset_obj )const
-{
-   return get_balance(*owner, *asset_obj);
-}
-
 void database::adjust_balance(account_id_type account, asset delta )
 { try {
    if( delta.amount == 0 )
@@ -71,12 +65,6 @@ void database::adjust_balance(account_id_type account, asset delta )
 void database::adjust_balance(const account_object& account, asset delta )
 {
    adjust_balance( account.id, delta);
-}
-
-// TODO:  This method should be removed
-void database::adjust_balance(const account_object* account, asset delta)
-{
-   adjust_balance(*account, delta);
 }
 
 void database::adjust_core_in_orders( const account_object& acnt, asset delta )

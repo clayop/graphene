@@ -24,7 +24,6 @@
 #include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/delegate_object.hpp>
-#include <graphene/chain/key_object.hpp>
 #include <graphene/chain/limit_order_object.hpp>
 #include <graphene/chain/call_order_object.hpp>
 #include <graphene/chain/vesting_balance_object.hpp>
@@ -324,7 +323,6 @@ BOOST_AUTO_TEST_CASE( create_account_test )
       REQUIRE_THROW_WITH_VALUE(op, name, "aaaa.");
       REQUIRE_THROW_WITH_VALUE(op, name, ".aaaa");
       REQUIRE_THROW_WITH_VALUE(op, options.voting_account, account_id_type(999999999));
-      REQUIRE_THROW_WITH_VALUE(op, options.memo_key, key_id_type(999999999));
 
       auto auth_bak = op.owner;
       op.owner.add_authority(account_id_type(9999999999), 10);
@@ -332,13 +330,9 @@ BOOST_AUTO_TEST_CASE( create_account_test )
       op.owner = auth_bak;
       BOOST_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), fc::exception);
       op.owner = auth_bak;
-      op.owner.add_authority(key_id_type(9999999999), 10);
-      trx.operations.back() = op;
-      BOOST_REQUIRE_THROW(PUSH_TX( db, trx, ~0 ), fc::exception);
-      op.owner = auth_bak;
 
       trx.operations.back() = op;
-      trx.sign(key_id_type(), delegate_priv_key);
+      trx.sign( delegate_priv_key);
       trx.validate();
       PUSH_TX( db, trx, ~0 );
 
@@ -347,10 +341,10 @@ BOOST_AUTO_TEST_CASE( create_account_test )
       BOOST_CHECK(nathan_account.id.type() == account_object_type);
       BOOST_CHECK(nathan_account.name == "nathan");
 
-      BOOST_REQUIRE(nathan_account.owner.auths.size() == 1);
-      BOOST_CHECK(nathan_account.owner.auths.at(genesis_key) == 123);
-      BOOST_REQUIRE(nathan_account.active.auths.size() == 1);
-      BOOST_CHECK(nathan_account.active.auths.at(genesis_key) == 321);
+      BOOST_REQUIRE(nathan_account.owner.num_auths() == 1);
+      BOOST_CHECK(nathan_account.owner.key_auths.at(genesis_key) == 123);
+      BOOST_REQUIRE(nathan_account.active.num_auths() == 1);
+      BOOST_CHECK(nathan_account.active.key_auths.at(genesis_key) == 321);
       BOOST_CHECK(nathan_account.options.voting_account == account_id_type());
       BOOST_CHECK(nathan_account.options.memo_key == genesis_key);
 
@@ -363,92 +357,38 @@ BOOST_AUTO_TEST_CASE( create_account_test )
    }
 }
 
-BOOST_AUTO_TEST_CASE( child_account )
-{
-   try {
-      INVOKE(create_account_test);
-      fc::ecc::private_key child_private_key = fc::ecc::private_key::generate();
-      fc::ecc::private_key nathan_private_key = fc::ecc::private_key::generate();
-      const auto& child_key = register_key(child_private_key.get_public_key());
-      const auto& nathan_key = register_key(nathan_private_key.get_public_key());
-      const account_object& nathan = get_account("nathan");
-      const account_object& root = create_account("root");
-      upgrade_to_lifetime_member(root);
-
-      skip_key_index_test = true;
-      db.modify(nathan, [nathan_key](account_object& a) {
-         a.owner = authority(1, nathan_key.get_id(), 1);
-         a.active = authority(1, nathan_key.get_id(), 1);
-      });
-
-      BOOST_CHECK(nathan.active.get_keys() == vector<key_id_type>{nathan_key.get_id()});
-
-      auto op = make_account("nathan/child");
-      op.registrar = root.id;
-      op.owner = authority(1, child_key.get_id(), 1);
-      op.active = authority(1, child_key.get_id(), 1);
-      trx.operations.emplace_back(op);
-      trx.sign({}, delegate_priv_key);
-
-      BOOST_REQUIRE_THROW(PUSH_TX( db, trx ), fc::exception);
-      sign(trx, nathan_key.id,nathan_private_key);
-      BOOST_REQUIRE_THROW(PUSH_TX( db, trx ), fc::exception);
-      trx.signatures.clear();
-      op.owner = authority(1, account_id_type(nathan.id), 1);
-      trx.operations = {op};
-      trx.sign({}, delegate_priv_key);
-      trx.sign(nathan_key.id, nathan_private_key);
-      db.push_transaction(trx);
-
-      BOOST_CHECK( get_account("nathan/child").active.auths == op.active.auths );
-   } catch (fc::exception& e) {
-      edump((e.to_detail_string()));
-      throw;
-   }
-}
-
 BOOST_AUTO_TEST_CASE( update_account )
 {
    try {
-      INVOKE(create_account_test);
-      const account_object& nathan = get_account("nathan");
+      const account_object& nathan = create_account("nathan", delegate_pub_key);
       const fc::ecc::private_key nathan_new_key = fc::ecc::private_key::generate();
-      const key_id_type key_id = db.get_index<key_object>().get_next_id();
+      const public_key_type key_id = nathan_new_key.get_public_key();
       const auto& active_delegates = db.get_global_properties().active_delegates;
 
       transfer(account_id_type()(db), nathan, asset(30000));
 
-      trx.operations.emplace_back(key_create_operation({asset(),nathan.id,address(nathan_new_key.get_public_key())}));
-      PUSH_TX( db, trx, ~0 );
-
+      trx.operations.clear();
       account_update_operation op;
       op.account = nathan.id;
-      op.owner = authority(2, key_id, 1, key_id_type(), 1);
-      op.active = authority(2, key_id, 1, key_id_type(), 1);
+      op.owner = authority(2, key_id, 1, delegate_pub_key, 1);
+      op.active = authority(2, key_id, 1, delegate_pub_key, 1);
       op.new_options = nathan.options;
       op.new_options->votes = flat_set<vote_id_type>({active_delegates[0](db).vote_id, active_delegates[5](db).vote_id});
       op.new_options->num_committee = 2;
-      trx.operations.back() = op;
+      trx.operations.push_back(op);
+      BOOST_TEST_MESSAGE( "Updating account" );
       PUSH_TX( db, trx, ~0 );
 
-      BOOST_CHECK(nathan.options.memo_key == key_id_type());
+      BOOST_CHECK(nathan.options.memo_key == delegate_pub_key);
       BOOST_CHECK(nathan.active.weight_threshold == 2);
-      BOOST_CHECK(nathan.active.auths.size() == 2);
-      BOOST_CHECK(nathan.active.auths.at(key_id) == 1);
-      BOOST_CHECK(nathan.active.auths.at(key_id_type()) == 1);
+      BOOST_CHECK(nathan.active.num_auths() == 2);
+      BOOST_CHECK(nathan.active.key_auths.at(key_id) == 1);
+      BOOST_CHECK(nathan.active.key_auths.at(delegate_pub_key) == 1);
       BOOST_CHECK(nathan.owner.weight_threshold == 2);
-      BOOST_CHECK(nathan.owner.auths.size() == 2);
-      BOOST_CHECK(nathan.owner.auths.at(key_id) == 1);
-      BOOST_CHECK(nathan.owner.auths.at(key_id_type()) == 1);
+      BOOST_CHECK(nathan.owner.num_auths() == 2);
+      BOOST_CHECK(nathan.owner.key_auths.at(key_id) == 1);
+      BOOST_CHECK(nathan.owner.key_auths.at(delegate_pub_key) == 1);
       BOOST_CHECK(nathan.options.votes.size() == 2);
-
-      /** these votes are no longer tallied in real time
-      BOOST_CHECK(active_delegates[0](db).vote(db).total_votes == 30000);
-      BOOST_CHECK(active_delegates[1](db).vote(db).total_votes == 0);
-      BOOST_CHECK(active_delegates[4](db).vote(db).total_votes == 0);
-      BOOST_CHECK(active_delegates[5](db).vote(db).total_votes == 30000);
-      BOOST_CHECK(active_delegates[6](db).vote(db).total_votes == 0);
-      */
 
       transfer(account_id_type()(db), nathan, asset(3000000));
 
@@ -1161,7 +1101,7 @@ BOOST_AUTO_TEST_CASE( witness_withdraw_pay_test )
    generate_block();
 
    // Make an account and upgrade it to prime, so that witnesses get some pay
-   create_account("nathan");
+   create_account("nathan", delegate_pub_key);
    transfer(account_id_type()(db), get_account("nathan"), asset(10000000000));
    generate_block();
 
@@ -1192,6 +1132,7 @@ BOOST_AUTO_TEST_CASE( witness_withdraw_pay_test )
    } );
 
    BOOST_CHECK_EQUAL(core->dynamic_asset_data_id(db).accumulated_fees.value, 0);
+   BOOST_TEST_MESSAGE( "Upgrading account" );
    account_upgrade_operation uop;
    uop.account_to_upgrade = nathan->get_id();
    uop.upgrade_to_lifetime_member = true;
@@ -1199,7 +1140,7 @@ BOOST_AUTO_TEST_CASE( witness_withdraw_pay_test )
    trx.operations.push_back(uop);
    trx.visit(operation_set_fee(db.current_fee_schedule()));
    trx.validate();
-   trx.sign(key_id_type(),delegate_priv_key);
+   trx.sign(delegate_priv_key);
    db.push_transaction(trx);
    trx.clear();
    BOOST_CHECK_EQUAL(get_balance(*nathan, *core), 8950000000);
@@ -1219,6 +1160,7 @@ BOOST_AUTO_TEST_CASE( witness_withdraw_pay_test )
          _dpo.next_maintenance_time = db.head_block_time() + 1;
       } );
    };
+   BOOST_TEST_MESSAGE( "Generating some blocks" );
 
    // generate some blocks
    while( db.head_block_num() < 30 )
@@ -1232,9 +1174,9 @@ BOOST_AUTO_TEST_CASE( witness_withdraw_pay_test )
 
    schedule_maint();
    // The 80% lifetime referral fee went to the committee account, which burned it. Check that it's here.
-   BOOST_CHECK_EQUAL( core->burned(db).value, 840000000 );
+   BOOST_CHECK_EQUAL( core->reserved(db).value, 840000000 );
    generate_block();
-   BOOST_CHECK_EQUAL( core->burned(db).value, 840000000 + 210000000 - ref_budget );
+   BOOST_CHECK_EQUAL( core->reserved(db).value, 840000000 + 210000000 - ref_budget );
    BOOST_CHECK_EQUAL( db.get_dynamic_global_properties().witness_budget.value, ref_budget );
    witness = &db.fetch_block_by_number(db.head_block_num())->witness(db);
    // first witness paid from old budget (so no pay)
@@ -1279,7 +1221,7 @@ BOOST_AUTO_TEST_CASE( witness_withdraw_pay_test )
    trx.clear();
 
    BOOST_CHECK_EQUAL(get_balance(witness->witness_account(db), *core), witness_ppb - 1/*fee*/);
-   BOOST_CHECK_EQUAL(core->burned(db).value, 840000000 + 210000000 - ref_budget );
+   BOOST_CHECK_EQUAL(core->reserved(db).value, 840000000 + 210000000 - ref_budget );
    BOOST_CHECK_EQUAL(witness->accumulated_income.value, 0);
 } FC_LOG_AND_RETHROW() }
 

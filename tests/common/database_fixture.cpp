@@ -50,6 +50,7 @@ database_fixture::database_fixture()
    try {
    auto ahplugin = app.register_plugin<graphene::account_history::account_history_plugin>();
    auto mhplugin = app.register_plugin<graphene::market_history::market_history_plugin>();
+   delegate_pub_key = delegate_priv_key.get_public_key();
 
    boost::program_options::variables_map options;
 
@@ -66,9 +67,12 @@ database_fixture::database_fixture()
    for( int i = 0; i < 10; ++i )
    {
       auto name = "init"+fc::to_string(i);
-      genesis_state.allocation_targets.emplace_back(name, delegate_priv_key.get_public_key(), 0, true);
-      genesis_state.initial_committee.push_back({name});
-      genesis_state.initial_witnesses.push_back({name, delegate_priv_key.get_public_key(), secret});
+      genesis_state.initial_accounts.emplace_back(name,
+                                                  delegate_priv_key.get_public_key(),
+                                                  delegate_priv_key.get_public_key(),
+                                                  true);
+      genesis_state.initial_committee_candidates.push_back({name});
+      genesis_state.initial_witness_candidates.push_back({name, delegate_priv_key.get_public_key(), secret});
    }
    fc::reflector<fee_schedule_type>::visit(fee_schedule_type::fee_set_visitor{genesis_state.initial_parameters.current_fees, 0});
    db.init_genesis(genesis_state);
@@ -77,7 +81,6 @@ database_fixture::database_fixture()
 
    generate_block();
 
-   genesis_key(db); // attempt to deref
    trx.set_expiration(db.head_block_time() + fc::minutes(1));
    } catch ( const fc::exception& e )
    {
@@ -89,12 +92,12 @@ database_fixture::database_fixture()
 }
 
 database_fixture::~database_fixture()
-{
+{ try {
    // If we're unwinding due to an exception, don't do any more checks.
    // This way, boost test's last checkpoint tells us approximately where the error was.
    if( !std::uncaught_exception() )
    {
-      verify_asset_supplies();
+      verify_asset_supplies(db);
       verify_account_history_plugin_index();
       BOOST_CHECK( db.get_node_properties().skip_flags == database::skip_nothing );
    }
@@ -102,7 +105,7 @@ database_fixture::~database_fixture()
    if( data_dir )
       db.close();
    return;
-}
+} FC_CAPTURE_AND_RETHROW() }
 
 fc::ecc::private_key database_fixture::generate_private_key(string seed)
 {
@@ -119,7 +122,7 @@ string database_fixture::generate_anon_acct_name()
    return "anon-acct-x" + std::to_string( anon_acct_count++ );
 }
 
-void database_fixture::verify_asset_supplies( )const
+void database_fixture::verify_asset_supplies( const database& db )
 {
    //wlog("*** Begin asset supply verification ***");
    const asset_dynamic_data_object& core_asset_data = db.get_core_asset().dynamic_asset_data_id(db);
@@ -196,31 +199,31 @@ void database_fixture::verify_account_history_plugin_index( )const
       app.get_plugin<graphene::account_history::account_history_plugin>("account_history");
    if( pin->tracked_accounts().size() == 0 )
    {
+      /*
       vector< pair< account_id_type, address > > tuples_from_db;
       const auto& primary_account_idx = db.get_index_type<account_index>().indices().get<by_id>();
-      flat_set< address > acct_addresses;
+      flat_set< public_key_type > acct_addresses;
       acct_addresses.reserve( 2 * GRAPHENE_DEFAULT_MAX_AUTHORITY_MEMBERSHIP + 2 );
 
       for( const account_object& acct : primary_account_idx )
       {
          account_id_type account_id = acct.id;
          acct_addresses.clear();
-         for( const pair< object_id_type, weight_type >& auth : acct.owner.auths )
+         for( const pair< account_id_type, weight_type >& auth : acct.owner.account_auths )
          {
             if( auth.first.type() == key_object_type )
-               acct_addresses.insert( key_id_type( auth.first )(db).key_address() );
+               acct_addresses.insert(  auth.first );
          }
          for( const pair< object_id_type, weight_type >& auth : acct.active.auths )
          {
             if( auth.first.type() == key_object_type )
-               acct_addresses.insert( key_id_type( auth.first )(db).key_address() );
+               acct_addresses.insert( auth.first );
          }
          acct_addresses.insert( acct.options.get_memo_key()(db).key_address() );
          for( const address& addr : acct_addresses )
             tuples_from_db.emplace_back( account_id, addr );
       }
 
-      /*
       vector< pair< account_id_type, address > > tuples_from_index;
       tuples_from_index.reserve( tuples_from_db.size() );
       const auto& key_account_idx =
@@ -310,9 +313,9 @@ void database_fixture::generate_blocks(fc::time_point_sec timestamp, bool miss_i
 
 account_create_operation database_fixture::make_account(
    const std::string& name /* = "nathan" */,
-   key_id_type key /* = key_id_type() */
+   public_key_type key /* = key_id_type() */
    )
-{
+{ try {
    account_create_operation create_account;
    create_account.registrar = account_id_type();
 
@@ -336,14 +339,14 @@ account_create_operation database_fixture::make_account(
 
    create_account.fee = create_account.calculate_fee(db.current_fee_schedule());
    return create_account;
-}
+} FC_CAPTURE_AND_RETHROW() }
 
 account_create_operation database_fixture::make_account(
    const std::string& name,
    const account_object& registrar,
    const account_object& referrer,
    uint8_t referrer_percent /* = 100 */,
-   key_id_type key /* = key_id_type() */
+   public_key_type key /* = public_key_type() */
    )
 {
    try
@@ -458,6 +461,25 @@ const asset_object& database_fixture::create_user_issued_asset( const string& na
    return db.get<asset_object>(ptx.operation_results[0].get<object_id_type>());
 }
 
+const asset_object& database_fixture::create_user_issued_asset( const string& name, const account_object& issuer, uint16_t flags )
+{
+   asset_create_operation creator;
+   creator.issuer = issuer.id;
+   creator.fee = asset();
+   creator.symbol = name;
+   creator.common_options.max_supply = 0;
+   creator.precision = 2;
+   creator.common_options.core_exchange_rate = price({asset(1,1),asset(1)});
+   creator.common_options.max_supply = GRAPHENE_MAX_SHARE_SUPPLY;
+   creator.common_options.flags = flags;
+   creator.common_options.issuer_permissions = flags;
+   trx.operations.push_back(std::move(creator));
+   trx.validate();
+   processed_transaction ptx = db.push_transaction(trx, ~0);
+   trx.operations.clear();
+   return db.get<asset_object>(ptx.operation_results[0].get<object_id_type>());
+}
+
 void database_fixture::issue_uia( const account_object& recipient, asset amount )
 {
    asset_issue_operation op({asset(),amount.asset_id(db).issuer, amount, recipient.id});
@@ -468,7 +490,7 @@ void database_fixture::issue_uia( const account_object& recipient, asset amount 
 
 const account_object& database_fixture::create_account(
    const string& name,
-   const key_id_type& key /* = key_id_type() */
+   const public_key_type& key /* = public_key_type() */
    )
 {
    trx.operations.push_back(make_account(name, key));
@@ -484,7 +506,7 @@ const account_object& database_fixture::create_account(
    const account_object& registrar,
    const account_object& referrer,
    uint8_t referrer_percent /* = 100 */,
-   const key_id_type& key /*= key_id_type()*/
+   const public_key_type& key /*= public_key_type()*/
    )
 {
    try
@@ -512,26 +534,20 @@ const account_object& database_fixture::create_account(
    {
       trx.operations.clear();
 
-      key_create_operation key_op;
-      key_op.fee_paying_account = registrar_id;
-      key_op.key_data = public_key_type( key.get_public_key() );
-      trx.operations.push_back( key_op );
-
       account_create_operation account_create_op;
-      relative_key_id_type key_rkid(0);
 
       account_create_op.registrar = registrar_id;
       account_create_op.name = name;
-      account_create_op.owner = authority(1234, key_rkid, 1234);
-      account_create_op.active = authority(5678, key_rkid, 5678);
-      account_create_op.options.memo_key = key_rkid;
+      account_create_op.owner = authority(1234, public_key_type(key.get_public_key()), 1234);
+      account_create_op.active = authority(5678, public_key_type(key.get_public_key()), 5678);
+      account_create_op.options.memo_key = key.get_public_key();
       trx.operations.push_back( account_create_op );
 
       trx.validate();
 
       processed_transaction ptx = db.push_transaction(trx, ~0);
       //wdump( (ptx) );
-      const account_object& result = db.get<account_object>(ptx.operation_results[1].get<object_id_type>());
+      const account_object& result = db.get<account_object>(ptx.operation_results[0].get<object_id_type>());
       trx.operations.clear();
       return result;
    }
@@ -549,18 +565,17 @@ const delegate_object& database_fixture::create_delegate( const account_object& 
    return db.get<delegate_object>(ptx.operation_results[0].get<object_id_type>());
 }
 
-const witness_object&database_fixture::create_witness(account_id_type owner, key_id_type signing_key, const fc::ecc::private_key& signing_private_key)
+const witness_object&database_fixture::create_witness(account_id_type owner, const fc::ecc::private_key& signing_private_key)
 {
-   return create_witness(owner(db), signing_key, signing_private_key);
+   return create_witness(owner(db), signing_private_key);
 }
 
-const witness_object& database_fixture::create_witness( const account_object& owner, key_id_type signing_key,
+const witness_object& database_fixture::create_witness( const account_object& owner,
                                                         const fc::ecc::private_key& signing_private_key )
 { try {
-      FC_ASSERT(db.get(signing_key).key_address() == public_key_type(signing_private_key.get_public_key()));
    witness_create_operation op;
    op.witness_account = owner.id;
-   op.block_signing_key = signing_key;
+   op.block_signing_key = signing_private_key.get_public_key();
    secret_hash_type::encoder enc;
    fc::raw::pack(enc, signing_private_key);
    fc::raw::pack(enc, secret_hash_type());
@@ -572,21 +587,6 @@ const witness_object& database_fixture::create_witness( const account_object& ow
    return db.get<witness_object>(ptx.operation_results[0].get<object_id_type>());
 } FC_CAPTURE_AND_RETHROW() }
 
-const key_object& database_fixture::register_key( const public_key_type& key )
-{
-   trx.operations.push_back(key_create_operation({asset(),account_id_type(), key}));
-   key_id_type new_key = db.push_transaction(trx, ~0).operation_results[0].get<object_id_type>();
-   trx.operations.clear();
-   return new_key(db);
-}
-
-const key_object& database_fixture::register_address( const address& addr )
-{
-   trx.operations.push_back(key_create_operation({asset(), account_id_type(), addr}));
-   key_id_type new_key = db.push_transaction(trx, ~0).operation_results[0].get<object_id_type>();
-   trx.operations.clear();
-   return new_key(db);
-}
 
 uint64_t database_fixture::fund(
    const account_object& account,
@@ -597,14 +597,16 @@ uint64_t database_fixture::fund(
    return get_balance(account, amount.asset_id(db));
 }
 
-void database_fixture::sign(signed_transaction& trx, key_id_type key_id, const fc::ecc::private_key& key)
+void database_fixture::sign(signed_transaction& trx, const fc::ecc::private_key& key)
 {
-  trx.sign( key_id, key );
+  trx.sign( key );
 }
 
 const limit_order_object*database_fixture::create_sell_order(account_id_type user, const asset& amount, const asset& recv)
 {
-   return create_sell_order(user(db), amount, recv);
+   auto r =  create_sell_order(user(db), amount, recv);
+   verify_asset_supplies(db);
+   return r;
 }
 
 const limit_order_object* database_fixture::create_sell_order( const account_object& user, const asset& amount, const asset& recv )
@@ -619,6 +621,7 @@ const limit_order_object* database_fixture::create_sell_order( const account_obj
    trx.validate();
    auto processed = db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
    //wdump((processed));
    return db.find<limit_order_object>( processed.operation_results[0].get<object_id_type>() );
 }
@@ -633,6 +636,7 @@ asset database_fixture::cancel_limit_order( const limit_order_object& order )
   trx.validate();
   auto processed = db.push_transaction(trx, ~0);
   trx.operations.clear();
+   verify_asset_supplies(db);
   return processed.operation_results[0].get<asset>();
 }
 
@@ -664,6 +668,7 @@ void database_fixture::transfer(
       }
       trx.validate();
       db.push_transaction(trx, ~0);
+      verify_asset_supplies(db);
       trx.operations.clear();
    } FC_CAPTURE_AND_RETHROW( (from.id)(to.id)(amount)(fee) )
 }
@@ -682,6 +687,7 @@ void database_fixture::update_feed_producers( const asset_object& mia, flat_set<
    trx.validate();
    db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
 } FC_CAPTURE_AND_RETHROW( (mia)(producers) ) }
 
 
@@ -700,6 +706,7 @@ void  database_fixture::publish_feed( const asset_object& mia, const account_obj
    trx.validate();
    db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
 }
 
 void database_fixture::force_global_settle( const asset_object& what, const price& p )
@@ -715,6 +722,7 @@ void database_fixture::force_global_settle( const asset_object& what, const pric
    trx.validate();
    db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
 } FC_CAPTURE_AND_RETHROW( (what)(p) ) }
 
 void  database_fixture::force_settle( const account_object& who, asset what )
@@ -729,6 +737,7 @@ void  database_fixture::force_settle( const account_object& who, asset what )
    trx.validate();
    db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
 } FC_CAPTURE_AND_RETHROW( (who)(what) ) }
 
 void  database_fixture::borrow(const account_object& who, asset what, asset collateral)
@@ -740,6 +749,7 @@ void  database_fixture::borrow(const account_object& who, asset what, asset coll
    trx.validate();
    db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
 } FC_CAPTURE_AND_RETHROW( (who.name)(what)(collateral) ) }
 
 void  database_fixture::cover(const account_object& who, asset what, asset collateral)
@@ -751,6 +761,7 @@ void  database_fixture::cover(const account_object& who, asset what, asset colla
    trx.validate();
    db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
 } FC_CAPTURE_AND_RETHROW( (who.name)(what)(collateral) ) }
 
 void database_fixture::fund_fee_pool( const account_object& from, const asset_object& asset_to_fund, const share_type amount )
@@ -762,6 +773,7 @@ void database_fixture::fund_fee_pool( const account_object& from, const asset_ob
    trx.validate();
    db.push_transaction(trx, ~0);
    trx.operations.clear();
+   verify_asset_supplies(db);
 }
 
 void database_fixture::enable_fees(
@@ -794,6 +806,7 @@ void database_fixture::upgrade_to_lifetime_member( const account_object& account
       db.push_transaction(trx, ~0);
       FC_ASSERT( op.account_to_upgrade(db).is_lifetime_member() );
       trx.clear();
+      verify_asset_supplies(db);
    }
    FC_CAPTURE_AND_RETHROW((account))
 }
@@ -813,6 +826,7 @@ void database_fixture::upgrade_to_annual_member(const account_object& account)
       db.push_transaction(trx, ~0);
       FC_ASSERT( op.account_to_upgrade(db).is_member(db.head_block_time()) );
       trx.clear();
+      verify_asset_supplies(db);
    } FC_CAPTURE_AND_RETHROW((account))
 }
 
@@ -933,7 +947,9 @@ bool _push_block( database& db, const signed_block& b, uint32_t skip_flags /* = 
 
 processed_transaction _push_transaction( database& db, const signed_transaction& tx, uint32_t skip_flags /* = 0 */ )
 { try {
-   return db.push_transaction( tx, skip_flags );
+   auto pt = db.push_transaction( tx, skip_flags );
+   database_fixture::verify_asset_supplies(db);
+   return pt;
 } FC_CAPTURE_AND_RETHROW((tx)) }
 
 } // graphene::chain::test

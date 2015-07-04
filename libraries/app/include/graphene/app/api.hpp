@@ -23,7 +23,6 @@
 #include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/limit_order_object.hpp>
 #include <graphene/chain/call_order_object.hpp>
-#include <graphene/chain/key_object.hpp>
 #include <graphene/chain/delegate_object.hpp>
 #include <graphene/chain/witness_object.hpp>
 #include <graphene/chain/proposal_object.hpp>
@@ -73,6 +72,12 @@ namespace graphene { namespace app {
           * @return the referenced block, or null if no matching block was found
           */
          optional<signed_block>            get_block(uint32_t block_num)const;
+
+         /** 
+          * @brief used to fetch an individual transaction.
+          */
+         processed_transaction   get_transaction( uint32_t block_num, uint32_t trx_in_block )const;
+
          /**
           * @brief Retrieve the current @ref global_property_object
           */
@@ -81,14 +86,6 @@ namespace graphene { namespace app {
           * @brief Retrieve the current @ref dynamic_global_property_object
           */
          dynamic_global_property_object get_dynamic_global_properties()const;
-         /**
-          * @brief Get a list of keys by ID
-          * @param key_ids IDs of the keys to retrieve
-          * @return The keys corresponding to the provided IDs
-          *
-          * This function has semantics identical to @ref get_objects
-          */
-         vector<optional<key_object>> get_keys(const vector<key_id_type>& key_ids)const;
          /**
           * @brief Get a list of accounts by ID
           * @param account_ids IDs of the accounts to retrieve
@@ -188,6 +185,45 @@ namespace graphene { namespace app {
          fc::optional<witness_object> get_witness_by_account(account_id_type account)const;
 
          /**
+          * @brief Get the total number of witnesses registered with the blockchain
+          */
+         uint64_t get_witness_count()const;
+
+         /**
+          * @brief Get names and IDs for registered witnesses
+          * @param lower_bound_name Lower bound of the first name to return
+          * @param limit Maximum number of results to return -- must not exceed 1000
+          * @return Map of witness names to corresponding IDs
+          */
+         map<string, witness_id_type> lookup_witness_accounts(const string& lower_bound_name, uint32_t limit)const;
+         
+         /**
+          * @brief Get names and IDs for registered delegates
+          * @param lower_bound_name Lower bound of the first name to return
+          * @param limit Maximum number of results to return -- must not exceed 1000
+          * @return Map of delegate names to corresponding IDs
+          */
+         map<string, delegate_id_type> lookup_delegate_accounts(const string& lower_bound_name, uint32_t limit)const;
+         
+         /**
+          * @brief Get a list of witnesses by ID
+          * @param witness_ids IDs of the witnesses to retrieve
+          * @return The witnesses corresponding to the provided IDs
+          *
+          * This function has semantics identical to @ref get_objects
+          */
+         vector<optional<witness_object>> get_witnesses(const vector<witness_id_type>& witness_ids)const;
+
+         /**
+          * @brief Get a list of delegates by ID
+          * @param delegate_ids IDs of the delegates to retrieve
+          * @return The delegates corresponding to the provided IDs
+          *
+          * This function has semantics identical to @ref get_objects
+          */
+         vector<optional<delegate_object>> get_delegates(const vector<delegate_id_type>& delegate_ids)const;
+
+         /**
           * @group Push Notification Methods
           * These methods may be used to get push notifications whenever an object or market is changed
           * @{
@@ -241,12 +277,8 @@ namespace graphene { namespace app {
          /**
           *  @return all accounts that referr to the key or account id in their owner or active authorities.
           */
-         vector<account_id_type> get_account_references( object_id_type key_or_account_id )const;
-
-         /**
-          *  @return all key_ids that have been registered for a given address. 
-          */
-         vector<key_id_type>  get_keys_for_address( const address& a )const;
+         vector<account_id_type> get_account_references( account_id_type account_id )const;
+         vector<account_id_type> get_key_references( public_key_type account_id )const;
 
          /**
           *  @return all open margin positions for a given account id.
@@ -289,7 +321,7 @@ namespace graphene { namespace app {
           */
          vector<operation_history_object> get_account_history(account_id_type account,
                                                               operation_history_id_type stop = operation_history_id_type(),
-                                                              int limit = 100,
+                                                              unsigned limit = 100,
                                                               operation_history_id_type start = operation_history_id_type())const;
 
          vector<bucket_object> get_market_history( asset_id_type a, asset_id_type b, uint32_t bucket_seconds, 
@@ -307,7 +339,17 @@ namespace graphene { namespace app {
    class network_api
    {
       public:
-         network_api(application& a):_app(a){}
+         network_api(application& a);
+
+         struct transaction_confirmation
+         {
+            transaction_id_type   id;
+            uint32_t              block_num;
+            uint32_t              trx_num;
+            processed_transaction trx;
+         };
+
+         typedef std::function<void(variant/*transaction_confirmation*/)> confirmation_callback;
 
          /**
           * @brief Broadcast a transaction to the network
@@ -317,6 +359,13 @@ namespace graphene { namespace app {
           * apply locally, an error will be thrown and the transaction will not be broadcast.
           */
          void broadcast_transaction(const signed_transaction& trx);
+
+         /** this version of broadcast transaction registers a callback method that will be called when the transaction is
+          * included into a block.  The callback method includes the transaction id, block number, and transaction number in the
+          * block.
+          */
+         void broadcast_transaction_with_callback( confirmation_callback cb, const signed_transaction& trx);
+
          /**
           * @brief add_node Connect to a new peer
           * @param ep The IP/Port of the peer to connect to
@@ -327,8 +376,11 @@ namespace graphene { namespace app {
           */
          std::vector<net::peer_status> get_connected_peers() const;
 
+         void on_applied_block( const signed_block& b );
       private:
-         application&              _app;
+         boost::signals2::scoped_connection             _applied_block_connection;
+         map<transaction_id_type,confirmation_callback> _callbacks;
+         application&                                   _app;
    };
 
    /**
@@ -368,13 +420,16 @@ namespace graphene { namespace app {
 
 }}  // graphene::app
 
+FC_REFLECT( graphene::app::network_api::transaction_confirmation, 
+        (id)(block_num)(trx_num)(trx) )
+
 FC_API(graphene::app::database_api,
        (get_objects)
        (get_block_header)
        (get_block)
+       (get_transaction)
        (get_global_properties)
        (get_dynamic_global_properties)
-       (get_keys)
        (get_accounts)
        (get_assets)
        (lookup_account_names)
@@ -388,7 +443,12 @@ FC_API(graphene::app::database_api,
        (get_settle_orders)
        (list_assets)
        (get_delegate_by_account)
+       (get_witnesses)
+       (get_delegates)
        (get_witness_by_account)
+       (get_witness_count)
+       (lookup_witness_accounts)
+       (lookup_delegate_accounts)
        (subscribe_to_objects)
        (unsubscribe_from_objects)
        (subscribe_to_market)
@@ -397,12 +457,14 @@ FC_API(graphene::app::database_api,
        (get_transaction_hex)
        (get_proposed_transactions)
        (get_account_references)
-       (get_keys_for_address)
+       (get_key_references)
        (get_margin_positions)
        (get_balance_objects)
      )
 FC_API(graphene::app::history_api, (get_account_history)(get_market_history)(get_market_history_buckets))
-FC_API(graphene::app::network_api, (broadcast_transaction)(add_node)(get_connected_peers))
+FC_API(graphene::app::network_api, (broadcast_transaction)(broadcast_transaction_with_callback)
+      /* (add_node)(get_connected_peers) */
+       )
 FC_API(graphene::app::login_api,
        (login)
        (network)

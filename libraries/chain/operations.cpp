@@ -23,65 +23,99 @@
 namespace graphene { namespace chain {
 
 /**
- *  Valid symbols have between 3 and 17 upper case characters
- *  with at most a single "." that is not the first or last character.
+ *  Valid symbols can contain [A, Z], and '.'
+ *  They must start with [A, Z]
+ *  They must end with [A, Z]
+ *  They can contain a maximum of one '.'
  */
 bool is_valid_symbol( const string& symbol )
 {
-   if( symbol.size() > 17 ) return false;
-   if( symbol.size() < 3  ) return false;
-   int dot_count = 0;
-   for( auto c : symbol )
-   {
-      if( c == '.' ) ++dot_count;
-      else if( c < 'A' || c > 'Z' ) return false;
-   }
-   if( symbol[0] == '.' || symbol[symbol.size()-1] == '.' )
-      return false;
-   return dot_count <= 1;
+    if( symbol.size() < GRAPHENE_MIN_ASSET_SYMBOL_LENGTH )
+        return false;
+
+    if( symbol.size() > GRAPHENE_MAX_ASSET_SYMBOL_LENGTH )
+        return false;
+
+    if( !isalpha( symbol.front() ) )
+        return false;
+
+    if( !isalpha( symbol.back() ) )
+        return false;
+
+    bool dot_already_present = false;
+    for( const auto c : symbol )
+    {
+        if( isalpha( c ) && isupper( c ) )
+            continue;
+
+        if( c == '.' )
+        {
+            if( dot_already_present )
+                return false;
+
+            dot_already_present = true;
+            continue;
+        }
+
+        return false;
+    }
+
+    return true;
 }
 
 /**
- *  Valid names are all lower case, start with [a-z] and may
- *  have "." or "-" in the name along with a single '/'.  The
- *  next character after a "/", "." or "-" cannot be [0-9] or
- *  another '.', '-'.
- *
+ *  Valid names can contain [a, z], [0, 9], '.', and '-'
+ *  They must start with [a, z]
+ *  They must end with [a, z] or [0, 9]
+ *  '.' must be followed by [a, z]
+ *  '-' must be followed by [a, z] or [0, 9]
  */
-bool is_valid_name( const string& s )
+bool is_valid_name( const string& name )
 {
-   if( s.size() <  2  ) return false;
-   if( s.size() >= 64 ) return false;
+    if( name.size() < GRAPHENE_MIN_ACCOUNT_NAME_LENGTH )
+        return false;
 
-   int num_slash = 0;
-   char prev = ' ';
-   for( auto c : s )
-   {
-      if( c >= 'a' && c <= 'z' ){}
-      else if( c >= '0' && c <= '9' )
-      {
-         if( prev == ' ' || prev == '.' ||  prev == '/' ) return false;
-      }
-      else switch( c )
-      {
-            case '/':
-               if( ++num_slash > 1 ) return false;
-            case '.':
-            case '-':
-               if( prev == ' ' || prev == '/' || prev == '.' || prev == '-' ) return false;
-              break;
-            default:
-              return false;
-      }
-      prev = c;
-   }
-   switch( s.back() )
-   {
-      case '/': case '-': case '.':
-         return false;
-      default:
-         return true;
-   }
+    if( name.size() > GRAPHENE_MAX_ACCOUNT_NAME_LENGTH )
+        return false;
+
+    if( !isalpha( name.front() ) )
+        return false;
+
+    if( !isalpha( name.back() ) && !isdigit( name.back() ) )
+        return false;
+
+    for( size_t i = 0; i < name.size(); ++i )
+    {
+        const auto c = name.at( i );
+
+        if( isalpha( c ) && islower( c ) )
+            continue;
+
+        if( isdigit( c ) )
+            continue;
+
+        if( c == '.' )
+        {
+            const auto next = name.at( i + 1 );
+            if( !isalpha( next ) )
+                return false;
+
+            continue;
+        }
+
+        if( c == '-' )
+        {
+            const auto next = name.at( i + 1 );
+            if( !isalpha( next ) && !isdigit( next ) )
+                return false;
+
+            continue;
+        }
+
+        return false;
+    }
+
+    return true;
 }
 
 bool is_cheap_name( const string& n )
@@ -158,6 +192,16 @@ void account_update_operation::validate()const
    FC_ASSERT( fee.amount >= 0 );
    FC_ASSERT( account != account_id_type() );
    FC_ASSERT( owner || active || new_options );
+   if( owner )
+   {
+      FC_ASSERT( owner->num_auths() != 0 );
+      FC_ASSERT( owner->address_auths.size() == 0 );
+   }
+   if( active )
+   {
+      FC_ASSERT( active->num_auths() != 0 );
+      FC_ASSERT( active->address_auths.size() == 0 );
+   }
 
    if( new_options )
       new_options->validate();
@@ -193,23 +237,14 @@ share_type transfer_operation::calculate_fee( const fee_schedule_type& schedule 
    return core_fee_required;
 }
 
-struct key_data_validate
+share_type override_transfer_operation::calculate_fee( const fee_schedule_type& schedule )const
 {
-   typedef void result_type;
-   void operator()( const address& a )const { FC_ASSERT( a != address() ); }
-   void operator()( const public_key_type& a )const { FC_ASSERT( a != public_key_type() ); }
-};
-void key_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set,
-                                             flat_set<account_id_type>&) const
-{
-   active_auth_set.insert(fee_paying_account);
+   share_type core_fee_required = schedule.transfer_fee;
+   if( memo )
+      core_fee_required += schedule.total_data_fee(memo->message);
+   return core_fee_required;
 }
 
-void key_create_operation::validate()const
-{
-   FC_ASSERT( fee.amount >= 0 );
-   key_data.visit( key_data_validate() );
-}
 
 void account_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set,
                                                  flat_set<account_id_type>&) const
@@ -222,13 +257,11 @@ void account_create_operation::validate()const
    FC_ASSERT( fee.amount >= 0 );
    FC_ASSERT( is_valid_name( name ) );
    FC_ASSERT( referrer_percent <= GRAPHENE_100_PERCENT );
-   FC_ASSERT( !owner.auths.empty() );
-   auto pos = name.find( '/' );
-   if( pos != string::npos )
-   {
-      FC_ASSERT( owner.weight_threshold == 1 );
-      FC_ASSERT( owner.auths.size() == 1 );
-   }
+   FC_ASSERT( owner.num_auths() != 0 );
+   FC_ASSERT( owner.address_auths.size() == 0 );
+   // TODO: this asset causes many tests to fail, those tests should probably be updated
+   //FC_ASSERT( active.num_auths() != 0 );
+   FC_ASSERT( active.address_auths.size() == 0 );
    options.validate();
 }
 
@@ -255,6 +288,20 @@ void transfer_operation::validate()const
    FC_ASSERT( fee.amount >= 0 );
    FC_ASSERT( from != to );
    FC_ASSERT( amount.amount > 0 );
+}
+
+void override_transfer_operation::get_required_auth(flat_set<account_id_type>& active_auth_set,
+                                           flat_set<account_id_type>&) const
+{
+   active_auth_set.insert( issuer );
+}
+
+void override_transfer_operation::validate()const
+{
+   FC_ASSERT( fee.amount >= 0 );
+   FC_ASSERT( from != to );
+   FC_ASSERT( amount.amount > 0 );
+   FC_ASSERT( issuer != from );
 }
 
 void asset_create_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -309,21 +356,21 @@ share_type asset_update_operation::calculate_fee(const fee_schedule_type& k)cons
    return k.asset_update_fee + k.total_data_fee(new_options);
 }
 
-void asset_burn_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
+void asset_reserve_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
 {
    active_auth_set.insert(payer);
 }
 
-void asset_burn_operation::validate()const
+void asset_reserve_operation::validate()const
 {
    FC_ASSERT( fee.amount >= 0 );
-   FC_ASSERT( amount_to_burn.amount.value <= GRAPHENE_BLOCKCHAIN_MAX_SHARES );
-   FC_ASSERT( amount_to_burn.amount.value > 0 );
+   FC_ASSERT( amount_to_reserve.amount.value <= GRAPHENE_MAX_SHARE_SUPPLY );
+   FC_ASSERT( amount_to_reserve.amount.value > 0 );
 }
 
-share_type asset_burn_operation::calculate_fee(const fee_schedule_type& k)const
+share_type asset_reserve_operation::calculate_fee(const fee_schedule_type& k)const
 {
-   return k.asset_burn_fee;
+   return k.asset_reserve_fee;
 }
 
 void asset_issue_operation::get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&) const
@@ -334,7 +381,7 @@ void asset_issue_operation::get_required_auth(flat_set<account_id_type>& active_
 void asset_issue_operation::validate()const
 {
    FC_ASSERT( fee.amount >= 0 );
-   FC_ASSERT( asset_to_issue.amount.value <= GRAPHENE_BLOCKCHAIN_MAX_SHARES );
+   FC_ASSERT( asset_to_issue.amount.value <= GRAPHENE_MAX_SHARE_SUPPLY );
    FC_ASSERT( asset_to_issue.amount.value > 0 );
    FC_ASSERT( asset_to_issue.asset_id != 0 );
 }
@@ -756,7 +803,7 @@ share_type vesting_balance_withdraw_operation::calculate_fee(const fee_schedule_
 void memo_data::set_message( const fc::ecc::private_key& priv,
                              const fc::ecc::public_key& pub, const string& msg )
 {
-   if( from )
+   if( from != public_key_type() )
    {
       uint64_t entropy = fc::sha224::hash(fc::ecc::private_key::generate())._hash[0];
       entropy <<= 32;
@@ -777,7 +824,7 @@ void memo_data::set_message( const fc::ecc::private_key& priv,
 string memo_data::get_message( const fc::ecc::private_key& priv,
                                const fc::ecc::public_key& pub )const
 {
-   if( from )
+   if( from != public_key_type()  )
    {
       auto secret = priv.get_shared_secret(pub);
       auto nonce_plus_secret = fc::sha512::hash(fc::to_string(nonce) + secret.str());
@@ -815,7 +862,7 @@ void worker_create_operation::validate() const
    FC_ASSERT(fee.amount >= 0);
    FC_ASSERT(work_end_date > work_begin_date);
    FC_ASSERT(daily_pay > 0);
-   FC_ASSERT(daily_pay < GRAPHENE_BLOCKCHAIN_MAX_SHARES);
+   FC_ASSERT(daily_pay < GRAPHENE_MAX_SHARE_SUPPLY);
    FC_ASSERT(name.size() < GRAPHENE_MAX_WORKER_NAME_LENGTH );
    FC_ASSERT(url.size() < GRAPHENE_MAX_URL_LENGTH );
 }
@@ -829,7 +876,7 @@ share_type worker_create_operation::calculate_fee(const fee_schedule_type& k) co
 string memo_message::serialize() const
 {
    auto serial_checksum = string(sizeof(checksum), ' ');
-   (uint32_t&)(*serial_checksum.data()) = htonl(checksum);
+   (uint32_t&)(*serial_checksum.data()) = checksum;
    return serial_checksum + text;
 }
 
@@ -837,7 +884,7 @@ memo_message memo_message::deserialize(const string& serial)
 {
    memo_message result;
    FC_ASSERT( serial.size() >= sizeof(result.checksum) );
-   result.checksum = ntohl((uint32_t&)(*serial.data()));
+   result.checksum = ((uint32_t&)(*serial.data()));
    result.text = serial.substr(sizeof(result.checksum));
    return result;
 }
@@ -905,9 +952,8 @@ void  balance_claim_operation::get_required_auth(flat_set<account_id_type>& acti
 
 void  balance_claim_operation::validate()const
 {
-   FC_ASSERT( owners.size() > 0 );
-   FC_ASSERT( total_claimed.amount > 0 );
    FC_ASSERT( fee == asset() );
+   FC_ASSERT( balance_owner_key != public_key_type() );
 }
 
 

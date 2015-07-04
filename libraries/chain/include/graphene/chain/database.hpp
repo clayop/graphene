@@ -25,6 +25,7 @@
 #include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/block_database.hpp>
+#include <graphene/chain/genesis_state.hpp>
 
 #include <graphene/db/object_database.hpp>
 #include <graphene/db/object.hpp>
@@ -38,35 +39,6 @@
 namespace graphene { namespace chain {
    using graphene::db::abstract_object;
    using graphene::db::object;
-
-   struct genesis_state_type {
-       struct allocation_target_type {
-           allocation_target_type(const string& name = string(),
-                                  const address& addr = address(),
-                                  share_type weight = share_type(),
-                                  bool is_lifetime_member = false)
-               : name(name), addr(addr), weight(weight),is_lifetime_member(is_lifetime_member){}
-           string name;
-           address addr;
-           share_type weight;
-           bool is_lifetime_member;
-       };
-       struct initial_witness_type {
-           /// Must correspond to one of the allocation targets.
-           string owner_name;
-           public_key_type block_signing_key;
-           secret_hash_type initial_secret;
-       };
-       struct initial_committee_member_type {
-           /// Must correspond to one of the allocation targets.
-           string owner_name;
-       };
-
-       chain_parameters initial_parameters;
-       vector<allocation_target_type> allocation_targets;
-       vector<initial_witness_type> initial_witnesses;
-       vector<initial_committee_member_type> initial_committee;
-   };
 
    namespace detail
    {
@@ -315,8 +287,6 @@ namespace graphene { namespace chain {
          asset get_balance(account_id_type owner, asset_id_type asset_id)const;
          /// This is an overloaded method.
          asset get_balance(const account_object& owner, const asset_object& asset_obj)const;
-         /// This is an overloaded method.
-         asset get_balance(const account_object* owner, const asset_object* asset_obj)const;
 
          /**
           * @brief Adjust a particular account's balance in a given asset by a delta
@@ -326,8 +296,6 @@ namespace graphene { namespace chain {
          void adjust_balance(account_id_type account, asset delta);
          /// This is an overloaded method.
          void adjust_balance(const account_object& account, asset delta);
-         /// This is an overloaded method.
-         void adjust_balance(const account_object* account, asset delta);
 
          /**
           * If delta.asset_id is a core asset, adjusts account statistics
@@ -510,8 +478,3 @@ namespace graphene { namespace chain {
        }
    }
 } }
-
-FC_REFLECT(graphene::chain::genesis_state_type::allocation_target_type, (name)(addr)(weight))
-FC_REFLECT(graphene::chain::genesis_state_type::initial_witness_type, (owner_name)(block_signing_key)(initial_secret))
-FC_REFLECT(graphene::chain::genesis_state_type::initial_committee_member_type, (owner_name))
-FC_REFLECT(graphene::chain::genesis_state_type, (initial_parameters)(allocation_targets)(initial_witnesses)(initial_committee))

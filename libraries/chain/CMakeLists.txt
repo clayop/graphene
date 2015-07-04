@@ -6,6 +6,7 @@ add_library( graphene_chain
              type_id.cpp
 
              address.cpp
+             pts_address.cpp
              asset.cpp
              predicate.cpp
 
@@ -26,7 +27,6 @@ add_library( graphene_chain
              withdraw_permission_evaluator.cpp
              worker_evaluator.cpp
 
-             key_object.cpp
              account_object.cpp
              asset_object.cpp
              proposal_object.cpp

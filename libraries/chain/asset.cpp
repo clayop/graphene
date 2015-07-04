@@ -90,14 +90,15 @@ namespace graphene { namespace chain {
             FC_ASSERT( result <= GRAPHENE_MAX_SHARE_SUPPLY );
             return asset( result.to_uint64(), b.base.asset_id );
          }
-         FC_ASSERT( !"invalid asset * price", "", ("asset",a)("price",b) );
+         FC_THROW_EXCEPTION( fc::assert_exception, "invalid asset * price", ("asset",a)("price",b) );
       }
 
       price operator / ( const asset& base, const asset& quote )
-      {
+      { try {
          FC_ASSERT( base.asset_id != quote.asset_id );
          return price{base,quote};
-      }
+      } FC_CAPTURE_AND_RETHROW( (base)(quote) ) }
+
       price price::max( asset_id_type base, asset_id_type quote ) { return asset( share_type(GRAPHENE_MAX_SHARE_SUPPLY), base ) / asset( share_type(1), quote); }
       price price::min( asset_id_type base, asset_id_type quote ) { return asset( 1, base ) / asset( GRAPHENE_MAX_SHARE_SUPPLY, quote); }
  

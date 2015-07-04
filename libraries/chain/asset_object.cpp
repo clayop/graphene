@@ -52,8 +52,10 @@ void graphene::chain::asset_bitasset_data_object::update_median_feeds(time_point
       }
    }
 
-   if( current_feeds.empty() )
+   // If there are no valid feeds, or the number available is less than the minimum to calculate a median...
+   if( current_feeds.size() < options.minimum_feeds )
    {
+      //... don't calculate a median, and set a null feed
       current_feed_publication_time = current_time;
       current_feed = price_feed();
       return;
@@ -111,6 +113,7 @@ void asset_object::asset_options::validate()const
 
 void asset_object::bitasset_options::validate() const
 {
+   FC_ASSERT(minimum_feeds > 0);
    FC_ASSERT(force_settlement_offset_percent <= GRAPHENE_100_PERCENT);
    FC_ASSERT(maximum_force_settlement_volume <= GRAPHENE_100_PERCENT);
 }
@@ -142,7 +145,7 @@ asset asset_object::amount_from_string(string amount_string) const
    share_type satoshis = 0;
 
    share_type scaled_precision = 1;
-   for( short i = 0; i < precision; ++i )
+   for( uint8_t i = 0; i < precision; ++i )
       scaled_precision *= 10;
 
    const auto decimal_pos = amount_string.find( '.' );
@@ -164,7 +167,7 @@ asset asset_object::amount_from_string(string amount_string) const
          satoshis += std::stoll( rhs );
    }
 
-   FC_ASSERT( satoshis <= GRAPHENE_BLOCKCHAIN_MAX_SHARES );
+   FC_ASSERT( satoshis <= GRAPHENE_MAX_SHARE_SUPPLY );
 
    if( negative_found )
       satoshis *= -1;
@@ -175,7 +178,7 @@ asset asset_object::amount_from_string(string amount_string) const
 string asset_object::amount_to_string(share_type amount) const
 {
    share_type scaled_precision = 1;
-   for( short i = 0; i < precision; ++i )
+   for( uint8_t i = 0; i < precision; ++i )
       scaled_precision *= 10;
    assert(scaled_precision > 0);
 

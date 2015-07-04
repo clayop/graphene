@@ -89,14 +89,14 @@ void account_statistics_object::process_fees(const account_object& a, database& 
          assert( network_cut <= core_fee_total );
 
 #ifndef NDEBUG
-         share_type burned = cut_fee(network_cut, props.parameters.burn_percent_of_fee);
-         share_type accumulated = network_cut - burned;
-         assert( accumulated + burned == network_cut );
+         share_type reserveed = cut_fee(network_cut, props.parameters.reserve_percent_of_fee);
+         share_type accumulated = network_cut - reserveed;
+         assert( accumulated + reserveed == network_cut );
 #endif
          share_type lifetime_cut = cut_fee(core_fee_total, account.lifetime_referrer_fee_percentage);
          share_type referral = core_fee_total - network_cut - lifetime_cut;
 
-         d.modify(dynamic_asset_data_id_type()(d), [network_cut](asset_dynamic_data_object& d) {
+         d.modify(asset_dynamic_data_id_type()(d), [network_cut](asset_dynamic_data_object& d) {
             d.accumulated_fees += network_cut;
          });
 
@@ -110,7 +110,7 @@ void account_statistics_object::process_fees(const account_object& a, database& 
          d.deposit_cashback(d.get(account.referrer), referrer_cut, require_vesting);
          d.deposit_cashback(d.get(account.registrar), registrar_cut, require_vesting);
 
-         assert( referrer_cut + registrar_cut + accumulated + burned + lifetime_cut == core_fee_total );
+         assert( referrer_cut + registrar_cut + accumulated + reserveed + lifetime_cut == core_fee_total );
       };
 
       share_type vesting_fee_subtotal(pending_fees);
@@ -156,12 +156,17 @@ void account_object::options_type::validate() const
               "May not specify fewer witnesses or committee members than the number voted for.");
 }
 
-set<object_id_type> account_member_index::get_members(const account_object& a)const
+set<account_id_type> account_member_index::get_account_members(const account_object& a)const
 {
-   set<object_id_type> result;
-   for( auto auth : a.owner.auths )
+   set<account_id_type> result;
+   for( auto auth : a.owner.account_auths )
       result.insert(auth.first);
-   for( auto auth : a.active.auths )
+   return result;
+}
+set<public_key_type> account_member_index::get_key_members(const account_object& a)const
+{
+   set<public_key_type> result;
+   for( auto auth : a.owner.key_auths )
       result.insert(auth.first);
    return result;
 }
@@ -171,9 +176,13 @@ void account_member_index::object_inserted(const object& obj)
     assert( dynamic_cast<const account_object*>(&obj) ); // for debug only
     const account_object& a = static_cast<const account_object&>(obj);
 
-    set<object_id_type> members = get_members(a);
-    for( auto item : members )
-       account_to_memberships[item].insert(obj.id);
+    auto account_members = get_account_members(a);
+    for( auto item : account_members )
+       account_to_account_memberships[item].insert(obj.id);
+
+    auto key_members = get_key_members(a);
+    for( auto item : key_members )
+       account_to_key_memberships[item].insert(obj.id);
 }
 
 void account_member_index::object_removed(const object& obj)
@@ -181,40 +190,71 @@ void account_member_index::object_removed(const object& obj)
     assert( dynamic_cast<const account_object*>(&obj) ); // for debug only
     const account_object& a = static_cast<const account_object&>(obj);
 
-    set<object_id_type>  members = get_members(a);
-    for( auto item : members )
-       account_to_memberships[item].erase( obj.id );
+    auto key_members = get_key_members(a);
+    for( auto item : key_members )
+       account_to_key_memberships[item].erase( obj.id );
+    auto account_members = get_account_members(a);
+    for( auto item : account_members )
+       account_to_account_memberships[item].erase( obj.id );
 }
 
 void account_member_index::about_to_modify(const object& before)
 {
-   before_members.clear();
+   before_key_members.clear();
+   before_account_members.clear();
    assert( dynamic_cast<const account_object*>(&before) ); // for debug only
    const account_object& a = static_cast<const account_object&>(before);
-   before_members = get_members(a);
+   before_key_members     = get_key_members(a);
+   before_account_members = get_account_members(a);
 }
 
 void account_member_index::object_modified(const object& after)
 {
     assert( dynamic_cast<const account_object*>(&after) ); // for debug only
     const account_object& a = static_cast<const account_object&>(after);
-    set<object_id_type> after_members = get_members(a);
+    set<account_id_type> after_account_members = get_account_members(a);
 
-    vector<object_id_type> removed; removed.reserve(before_members.size());
-    std::set_difference(before_members.begin(), before_members.end(),
-                        after_members.begin(), after_members.end(),
+    {
+    vector<account_id_type> removed; removed.reserve(before_account_members.size());
+    std::set_difference(before_account_members.begin(), before_account_members.end(),
+                        after_account_members.begin(), after_account_members.end(),
                         std::inserter(removed, removed.end()));
 
     for( auto itr = removed.begin(); itr != removed.end(); ++itr )
-       account_to_memberships[*itr].erase(after.id);
+       account_to_account_memberships[*itr].erase(after.id);
 
-    vector<object_id_type> added; added.reserve(after_members.size());
-    std::set_difference(after_members.begin(), after_members.end(),
-                        before_members.begin(), before_members.end(),
+    vector<object_id_type> added; added.reserve(after_account_members.size());
+    std::set_difference(after_account_members.begin(), after_account_members.end(),
+                        before_account_members.begin(), before_account_members.end(),
                         std::inserter(added, added.end()));
 
     for( auto itr = added.begin(); itr != added.end(); ++itr )
-       account_to_memberships[*itr].insert(after.id);
+       account_to_account_memberships[*itr].insert(after.id);
+    }
+
+
+
+
+    {
+    set<public_key_type> after_key_members = get_key_members(a);
+
+    vector<public_key_type> removed; removed.reserve(before_key_members.size());
+    std::set_difference(before_key_members.begin(), before_key_members.end(),
+                        after_key_members.begin(), after_key_members.end(),
+                        std::inserter(removed, removed.end()));
+
+    for( auto itr = removed.begin(); itr != removed.end(); ++itr )
+       account_to_key_memberships[*itr].erase(after.id);
+
+    vector<public_key_type> added; added.reserve(after_key_members.size());
+    std::set_difference(after_key_members.begin(), after_key_members.end(),
+                        before_key_members.begin(), before_key_members.end(),
+                        std::inserter(added, added.end()));
+
+    for( auto itr = added.begin(); itr != added.end(); ++itr )
+       account_to_key_memberships[*itr].insert(after.id);
+    }
+
 }
 
 void account_referrer_index::object_inserted( const object& obj )

@@ -25,13 +25,15 @@
 namespace graphene { namespace chain {
    bool transaction_evaluation_state::check_authority( const account_object& account, authority::classification auth_class, int depth )
    {
-      if( (!_is_proposed_trx) && (_db->get_node_properties().skip_flags & database::skip_authority_check) )
+      if( (!_is_proposed_trx) && (_db->get_node_properties().skip_flags & database::skip_authority_check)  )
+         return true;
+      if( (!_is_proposed_trx) && (_db->get_node_properties().skip_flags & database::skip_transaction_signatures)  )
          return true;
       if( account.get_id() == GRAPHENE_TEMP_ACCOUNT ||
           approved_by.find(make_pair(account.id, auth_class)) != approved_by.end() )
          return true;
 
-      FC_ASSERT( account.id.instance() != 0 || _is_proposed_trx );
+      FC_ASSERT( account.id.instance() != 0 || _is_proposed_trx, "", ("account",account)("is_proposed",_is_proposed_trx) );
 
       const authority* au = nullptr;
       switch( auth_class )
@@ -47,54 +49,56 @@ namespace graphene { namespace chain {
       };
 
       uint32_t total_weight = 0;
-      for( const auto& auth : au->auths )
+      for( const auto& auth : au->account_auths )
       {
          if( approved_by.find( std::make_pair(auth.first,auth_class) ) != approved_by.end() )
             total_weight += auth.second;
          else
          {
-            const object& auth_item = _db->get_object( auth.first );
-            switch( auth_item.id.type() )
+            if( depth == GRAPHENE_MAX_SIG_CHECK_DEPTH )
             {
-               case account_object_type:
-               {
-                  if( depth == GRAPHENE_MAX_SIG_CHECK_DEPTH )
-                  {
-                     //elog("Failing authority verification due to recursion depth.");
-                     return false;
-                  }
-                  if( check_authority( *dynamic_cast<const account_object*>( &auth_item ), auth_class, depth + 1 ) )
-                  {
-                     approved_by.insert( std::make_pair(auth_item.id,auth_class) );
-                     total_weight += auth.second;
-                  }
-                  break;
-               }
-               case key_object_type:
-               {
-                  if( signed_by( auth.first ) )
-                  {
-                     approved_by.insert( std::make_pair(auth_item.id,authority::key) );
-                     total_weight += auth.second;
-                  }
-                  break;
-               }
-               default:
-                  FC_ASSERT( !"Invalid Auth Object Type", "type:${type}", ("type",auth_item.id.type()) );
+               //elog("Failing authority verification due to recursion depth.");
+               return false;
+            }
+            const account_object& acnt = auth.first(*_db);
+            if( check_authority( acnt, auth_class, depth + 1 ) )
+            {
+               approved_by.insert( std::make_pair(acnt.id,auth_class) );
+               total_weight += auth.second;
             }
          }
-         if( total_weight >= au->weight_threshold )
-         {
-            approved_by.insert( std::make_pair(account.id, auth_class) );
-            return true;
-         }
+      }
+      for( const auto& key : au->key_auths )
+      {
+         if( signed_by( key.first ) )
+            total_weight += key.second;
+      }
+      for( const auto& key : au->address_auths )
+      {
+         if( signed_by( key.first ) )
+            total_weight += key.second;
+      }
+
+      if( total_weight >= au->weight_threshold )
+      {
+         approved_by.insert( std::make_pair(account.id, auth_class) );
+         return true;
       }
       return false;
    }
-   bool transaction_evaluation_state::signed_by( key_id_type id )const
+
+   bool transaction_evaluation_state::signed_by(const public_key_type& k)
    {
-      assert(_trx);
-      return _trx->signatures.find(id) != _trx->signatures.end();
+      auto itr = _sigs.find(k);
+      if( itr != _sigs.end() )
+         return itr->second = true;
+      return false;
+   }
+   bool transaction_evaluation_state::signed_by(const address& k)
+   {
+      for( auto itr = _sigs.begin(); itr != _sigs.end(); ++itr )
+         if( itr->first == k ) return true;
+      return false;
    }
 
 } } // namespace graphene::chain

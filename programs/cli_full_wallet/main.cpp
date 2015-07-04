@@ -43,6 +43,12 @@
 #include <fc/log/file_appender.hpp>
 #include <fc/log/logger.hpp>
 #include <fc/log/logger_config.hpp>
+
+#include <graphene/witness/witness.hpp>
+#include <graphene/account_history/account_history_plugin.hpp>
+#include <graphene/market_history/market_history_plugin.hpp>
+
+#include <boost/filesystem.hpp>
 #ifndef WIN32
 #include <csignal>
 #endif
@@ -51,33 +57,54 @@ using namespace graphene::app;
 using namespace graphene::chain;
 using namespace graphene::utilities;
 using namespace graphene::wallet;
+using namespace graphene;
 using namespace std;
 namespace bpo = boost::program_options;
 
 int main( int argc, char** argv )
 {
    try {
+      app::application node;
 
-      boost::program_options::options_description opts;
-         opts.add_options()
+      bpo::options_description cli;
+         cli.add_options()
          ("help,h", "Print this help message and exit.")
-         ("server-rpc-endpoint,s", bpo::value<string>()->implicit_value("ws://127.0.0.1:8090"), "Server websocket RPC endpoint")
-         ("server-rpc-user,u", bpo::value<string>(), "Server Username")
-         ("server-rpc-password,p", bpo::value<string>(), "Server Password")
          ("rpc-endpoint,r", bpo::value<string>()->implicit_value("127.0.0.1:8091"), "Endpoint for wallet websocket RPC to listen on")
          ("rpc-tls-endpoint,t", bpo::value<string>()->implicit_value("127.0.0.1:8092"), "Endpoint for wallet websocket TLS RPC to listen on")
          ("rpc-tls-certificate,c", bpo::value<string>()->implicit_value("server.pem"), "PEM certificate for wallet websocket TLS RPC")
          ("rpc-http-endpoint,h", bpo::value<string>()->implicit_value("127.0.0.1:8093"), "Endpoint for wallet HTTP RPC to listen on")
          ("daemon,d", "Run the wallet in daemon mode" )
-         ("wallet-file,w", bpo::value<string>()->implicit_value("wallet.json"), "wallet to load");
+         ("wallet-file,W", bpo::value<string>()->implicit_value("wallet.json"), "wallet to load");
+
+      bpo::options_description app_options("Graphene Witness Node");
+      bpo::options_description cfg_options("Graphene Witness Node");
+      app_options.add_options()
+            ("data-dir,d", bpo::value<boost::filesystem::path>()->default_value("witness_node_data_dir"), "Directory containing databases, configuration file, etc.")
+            ;
 
       bpo::variables_map options;
 
-      bpo::store( bpo::parse_command_line(argc, argv, opts), options );
+      auto witness_plug = node.register_plugin<witness_plugin::witness_plugin>();
+      auto history_plug = node.register_plugin<account_history::account_history_plugin>();
+      auto market_history_plug = node.register_plugin<market_history::market_history_plugin>();
+
+      try
+      {
+         bpo::options_description cfg;
+         node.set_program_options(cli, cfg);
+         app_options.add(cli);
+         cfg_options.add(cfg);
+         bpo::store(bpo::parse_command_line(argc, argv, app_options), options);
+      }
+      catch (const boost::program_options::error& e)
+      {
+        std::cerr << "Error parsing command line: " << e.what() << "\n";
+        return 1;
+      }
 
       if( options.count("help") )
       {
-         std::cout << opts << "\n";
+         std::cout << cli << "\n";
          return 0;
       }
 
@@ -110,8 +137,6 @@ int main( int argc, char** argv )
       idump( (key_to_wif( genesis_private_key ) ) );
 
       fc::ecc::private_key nathan_private_key = fc::ecc::private_key::regenerate(fc::sha256::hash(string("nathan")));
-      public_key_type nathan_pub_key = nathan_private_key.get_public_key();
-      idump( (nathan_pub_key) );
       idump( (key_to_wif( nathan_private_key ) ) );
 
       //
@@ -126,21 +151,23 @@ int main( int argc, char** argv )
       if( fc::exists( wallet_file ) )
           wdata = fc::json::from_file( wallet_file ).as<wallet_data>();
 
-      if( options.count("server-rpc-endpoint") )
-         wdata.ws_server = options.at("server-rpc-endpoint").as<std::string>();
-      if( options.count("server-rpc-user") )
-         wdata.ws_user = options.at("server-rpc-user").as<std::string>();
-      if( options.count("server-rpc-password") )
-         wdata.ws_password = options.at("server-rpc-password").as<std::string>();
 
-      fc::http::websocket_client client;
-      auto con  = client.connect( wdata.ws_server );
-      auto apic = std::make_shared<fc::rpc::websocket_api_connection>(*con);
 
-      auto remote_api = apic->get_remote_api< login_api >(1);
-      FC_ASSERT( remote_api->login( wdata.ws_user, wdata.ws_password ) );
+      node.initialize(data_dir, options);
+      node.initialize_plugins( options );
 
-      auto wapiptr = std::make_shared<wallet_api>(remote_api);
+      node.startup();
+      node.startup_plugins();
+
+      ilog("Started witness node on a chain with ${h} blocks.", ("h", node.chain_database()->head_block_num()));
+
+
+      // auto remote_api = apic->get_remote_api< login_api >(1);
+      // FC_ASSERT( remote_api->login( wdata.ws_user, wdata.ws_password ) );
+
+      auto login = std::make_shared<graphene::app::login_api>( std::ref(node) );
+      login->login( "", "" );
+      auto wapiptr = std::make_shared<wallet_api>(login);//remote_api);
       wapiptr->set_wallet_filename( wallet_file.generic_string() );
       wapiptr->load_wallet_file();
 
@@ -149,11 +176,6 @@ int main( int argc, char** argv )
       auto wallet_cli = std::make_shared<fc::rpc::cli>();
       for( auto& name_formatter : wapiptr->get_result_formatters() )
          wallet_cli->format_result( name_formatter.first, name_formatter.second );
-
-      boost::signals2::scoped_connection closed_connection(con->closed.connect([]{
-         cerr << "Server has disconnected us.\n";
-      }));
-      (void)(closed_connection);
 
       if( wapiptr->is_new() )
       {
@@ -237,7 +259,7 @@ int main( int argc, char** argv )
 
       wapi->save_wallet_file(wallet_file.generic_string());
       locked_connection.disconnect();
-      closed_connection.disconnect();
+      node.shutdown_plugins();
    }
    catch ( const fc::exception& e )
    {

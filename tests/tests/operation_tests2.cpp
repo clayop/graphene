@@ -20,9 +20,9 @@
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/operations.hpp>
-#include <graphene/chain/key_object.hpp>
 #include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/account_object.hpp>
+#include <graphene/chain/balance_object.hpp>
 #include <graphene/chain/witness_object.hpp>
 #include <graphene/chain/delegate_object.hpp>
 #include <graphene/chain/call_order_object.hpp>
@@ -42,12 +42,13 @@ BOOST_FIXTURE_TEST_SUITE( operation_tests, database_fixture )
 
 BOOST_AUTO_TEST_CASE( withdraw_permission_create )
 { try {
+   //ACTORS((nathan)(dan))
+   //idump((nathan)(dan));
    auto nathan_private_key = generate_private_key("nathan");
    auto dan_private_key = generate_private_key("dan");
-   key_id_type nathan_key_id = register_key(nathan_private_key.get_public_key()).id;
-   key_id_type dan_key_id = register_key(dan_private_key.get_public_key()).id;
-   account_id_type nathan_id = create_account("nathan", nathan_key_id).id;
-   account_id_type dan_id = create_account("dan", dan_key_id).id;
+   account_id_type nathan_id = create_account("nathan", nathan_private_key.get_public_key()).id;
+   account_id_type dan_id = create_account("dan", dan_private_key.get_public_key()).id;
+
    transfer(account_id_type(), nathan_id, asset(1000));
    generate_block();
    trx.set_expiration(db.head_block_time() + GRAPHENE_DEFAULT_MAX_TIME_UNTIL_EXPIRATION / 2);
@@ -71,7 +72,7 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_create )
       REQUIRE_THROW_WITH_VALUE(op, withdrawal_period_sec, 1);
       trx.operations.back() = op;
    }
-   trx.sign(nathan_key_id, nathan_private_key);
+   trx.sign(nathan_private_key);
    db.push_transaction( trx );
    trx.clear();
 } FC_LOG_AND_RETHROW() }
@@ -84,7 +85,6 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_test )
    auto dan_private_key = generate_private_key("dan");
    account_id_type nathan_id = get_account("nathan").id;
    account_id_type dan_id = get_account("dan").id;
-   key_id_type dan_key_id = dan_id(db).active.auths.begin()->first;
    withdraw_permission_id_type permit;
    trx.set_expiration(db.head_block_time() + GRAPHENE_DEFAULT_MAX_TIME_UNTIL_EXPIRATION/2);
 
@@ -123,16 +123,19 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_test )
       REQUIRE_THROW_WITH_VALUE(op, amount_to_withdraw, asset(6));
       trx.clear();
       trx.operations.push_back(op);
-      trx.sign(dan_key_id, dan_private_key);
+      trx.sign(dan_private_key);
       PUSH_TX( db, trx );
 
       // would be legal on its own, but doesn't work because trx already withdrew
       REQUIRE_THROW_WITH_VALUE(op, amount_to_withdraw, asset(5));
 
       // Make sure we can withdraw again this period, as long as we're not exceeding the periodic limit
-      trx.operations.back() = op;    // withdraw 1
-      trx.ref_block_prefix++;        // make it different from previous trx so it's non-duplicate
-      trx.sign(dan_key_id, dan_private_key);
+      trx.clear();
+      // withdraw 1
+      trx.operations = {op};
+      // make it different from previous trx so it's non-duplicate
+      trx.ref_block_prefix++;
+      trx.sign(dan_private_key);
       PUSH_TX( db, trx );
       trx.clear();
    }
@@ -148,10 +151,10 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_test )
       BOOST_CHECK(permit_object.withdrawal_limit == asset(5));
       BOOST_CHECK(permit_object.withdrawal_period_sec == fc::hours(1).to_seconds());
       BOOST_CHECK_EQUAL(permit_object.claimed_this_period.value, 2 );
-      BOOST_CHECK(permit_object.expiration == first_start_time + 5*permit_object.withdrawal_period_sec );
+      BOOST_CHECK(permit_object.expiration == first_start_time + 5*permit_object.withdrawal_period_sec);
       generate_blocks(first_start_time + permit_object.withdrawal_period_sec);
       // lazy update:  verify period_start_time isn't updated until new trx occurs
-      BOOST_CHECK(permit_object.period_start_time == first_start_time );
+      BOOST_CHECK(permit_object.period_start_time == first_start_time);
    }
 
    {
@@ -162,12 +165,13 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_test )
       op.withdraw_to_account = dan_id;
       op.amount_to_withdraw = asset(5);
       trx.operations.push_back(op);
-      trx.sign(dan_key_id, dan_private_key);
+      trx.sign(dan_private_key);
       //Throws because nathan doesn't have the money
       BOOST_CHECK_THROW(PUSH_TX( db, trx ), fc::exception);
       op.amount_to_withdraw = asset(1);
-      trx.operations.back() = op;
-      trx.sign(dan_key_id, dan_private_key);
+      trx.clear();
+      trx.operations = {op};
+      trx.sign(dan_private_key);
       PUSH_TX( db, trx );
    }
 
@@ -180,14 +184,14 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_test )
       const withdraw_permission_object& permit_object = permit(db);
       BOOST_CHECK(permit_object.authorized_account == dan_id);
       BOOST_CHECK(permit_object.withdraw_from_account == nathan_id);
-      BOOST_CHECK(permit_object.period_start_time == first_start_time + permit_object.withdrawal_period_sec );
-      BOOST_CHECK(permit_object.expiration == first_start_time + 5*permit_object.withdrawal_period_sec );
+      BOOST_CHECK(permit_object.period_start_time == first_start_time + permit_object.withdrawal_period_sec);
+      BOOST_CHECK(permit_object.expiration == first_start_time + 5*permit_object.withdrawal_period_sec);
       BOOST_CHECK(permit_object.withdrawal_limit == asset(5));
       BOOST_CHECK(permit_object.withdrawal_period_sec == fc::hours(1).to_seconds());
       generate_blocks(permit_object.expiration);
    }
    // Ensure the permit object has been garbage collected
-   BOOST_CHECK(db.find_object( permit ) == nullptr );
+   BOOST_CHECK(db.find_object(permit) == nullptr);
 
    {
       withdraw_permission_claim_operation op;
@@ -196,7 +200,7 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_test )
       op.withdraw_to_account = dan_id;
       op.amount_to_withdraw = asset(5);
       trx.operations.push_back(op);
-      trx.sign(dan_key_id, dan_private_key);
+      trx.sign(dan_private_key);
       //Throws because the permission has expired
       BOOST_CHECK_THROW(PUSH_TX( db, trx ), fc::exception);
    }
@@ -210,7 +214,6 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_nominal_case )
    auto dan_private_key = generate_private_key("dan");
    account_id_type nathan_id = get_account("nathan").id;
    account_id_type dan_id = get_account("dan").id;
-   key_id_type dan_key_id = dan_id(db).active.auths.begin()->first;
    withdraw_permission_id_type permit;
    trx.set_expiration(db.head_block_time() + GRAPHENE_DEFAULT_MAX_TIME_UNTIL_EXPIRATION/2);
 
@@ -227,7 +230,7 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_nominal_case )
       // ref_block_prefix is timestamp, so treat it as a rollable nonce
       // so tx's have different txid's
       trx.ref_block_prefix++;
-      trx.sign(dan_key_id, dan_private_key);
+      trx.sign(dan_private_key);
       PUSH_TX( db, trx );
       // tx's involving withdraw_permissions can't delete it even
       // if no further withdrawals are possible
@@ -252,7 +255,6 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_update )
    auto nathan_private_key = generate_private_key("nathan");
    account_id_type nathan_id = get_account("nathan").id;
    account_id_type dan_id = get_account("dan").id;
-   key_id_type nathan_key_id = nathan_id(db).active.auths.begin()->first;
    withdraw_permission_id_type permit;
    trx.set_expiration(db.head_block_time() + GRAPHENE_DEFAULT_MAX_TIME_UNTIL_EXPIRATION/2);
 
@@ -274,7 +276,7 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_update )
       REQUIRE_THROW_WITH_VALUE(op, authorized_account, account_id_type(0));
       REQUIRE_THROW_WITH_VALUE(op, period_start_time, db.head_block_time() - 50);
       trx.operations.back() = op;
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign(nathan_private_key);
       PUSH_TX( db, trx );
    }
 
@@ -298,7 +300,7 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_delete )
    op.withdraw_from_account = get_account("nathan").id;
    trx.set_expiration(db.head_block_id());
    trx.operations.push_back(op);
-   trx.sign(get_account("nathan").active.auths.begin()->first, generate_private_key("nathan"));
+   trx.sign(generate_private_key("nathan"));
    PUSH_TX( db, trx );
 } FC_LOG_AND_RETHROW() }
 
@@ -325,7 +327,7 @@ BOOST_AUTO_TEST_CASE( mia_feeds )
       op.issuer = nathan_id;
       op.new_feed_producers = {dan_id, ben_id, vikram_id};
       trx.operations.push_back(op);
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign(nathan_private_key);
       PUSH_TX( db, trx );
       generate_block(database::skip_nothing);
    }
@@ -372,12 +374,44 @@ BOOST_AUTO_TEST_CASE( mia_feeds )
    }
 } FC_LOG_AND_RETHROW() }
 
+BOOST_AUTO_TEST_CASE( feed_limit_test )
+{ try {
+   INVOKE( mia_feeds );
+   const asset_object& bit_usd = get_asset("BITUSD");
+   const asset_bitasset_data_object& bitasset = bit_usd.bitasset_data(db);
+   GET_ACTOR(nathan);
+
+   BOOST_CHECK(!bitasset.current_feed.settlement_price.is_null());
+
+   BOOST_TEST_MESSAGE("Setting minimum feeds to 4");
+   asset_update_bitasset_operation op;
+   op.new_options.minimum_feeds = 4;
+   op.asset_to_update = bit_usd.get_id();
+   op.issuer = bit_usd.issuer;
+   trx.operations = {op};
+   trx.sign(nathan_private_key);
+   db.push_transaction(trx);
+
+   BOOST_TEST_MESSAGE("Checking current_feed is null");
+   BOOST_CHECK(bitasset.current_feed.settlement_price.is_null());
+
+   BOOST_TEST_MESSAGE("Setting minimum feeds to 3");
+   op.new_options.minimum_feeds = 3;
+   trx.clear();
+   trx.operations = {op};
+   trx.sign(nathan_private_key);
+   db.push_transaction(trx);
+
+   BOOST_TEST_MESSAGE("Checking current_feed is not null");
+   BOOST_CHECK(!bitasset.current_feed.settlement_price.is_null());
+} FC_LOG_AND_RETHROW() }
+
 BOOST_AUTO_TEST_CASE( witness_create )
 { try {
    ACTOR(nathan);
    upgrade_to_lifetime_member(nathan_id);
    trx.clear();
-   witness_id_type nathan_witness_id = create_witness(nathan_id, nathan_key_id, nathan_private_key).id;
+   witness_id_type nathan_witness_id = create_witness(nathan_id, nathan_private_key).id;
    // Give nathan some voting stake
    transfer(genesis_account, nathan_id, asset(10000000));
    generate_block();
@@ -393,7 +427,7 @@ BOOST_AUTO_TEST_CASE( witness_create )
       op.new_options->num_committee = std::count_if(op.new_options->votes.begin(), op.new_options->votes.end(),
                                                     [](vote_id_type id) { return id.type() == vote_id_type::committee; });
       trx.operations.push_back(op);
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign(nathan_private_key);
       PUSH_TX( db, trx );
       trx.clear();
    }
@@ -504,7 +538,7 @@ BOOST_AUTO_TEST_CASE( global_settle_test )
       REQUIRE_THROW_WITH_VALUE(op, asset_to_settle, asset_id_type(100));
       REQUIRE_THROW_WITH_VALUE(op, issuer, account_id_type(2));
       trx.operations.back() = op;
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign(nathan_private_key);
       PUSH_TX( db, trx );
    }
 
@@ -512,11 +546,11 @@ BOOST_AUTO_TEST_CASE( global_settle_test )
    force_settle(dan_id(db), asset(495, bit_usd_id));
 
    BOOST_CHECK_EQUAL(get_balance(valentine_id, bit_usd_id), 0);
-   BOOST_CHECK_EQUAL(get_balance(valentine_id, asset_id_type()), 10046);
+   BOOST_CHECK_EQUAL(get_balance(valentine_id, asset_id_type()), 10045);
    BOOST_CHECK_EQUAL(get_balance(ben_id, bit_usd_id), 0);
    BOOST_CHECK_EQUAL(get_balance(ben_id, asset_id_type()), 10091);
    BOOST_CHECK_EQUAL(get_balance(dan_id, bit_usd_id), 0);
-   BOOST_CHECK_EQUAL(get_balance(dan_id, asset_id_type()), 9850);
+   BOOST_CHECK_EQUAL(get_balance(dan_id, asset_id_type()), 9849);
 } FC_LOG_AND_RETHROW()
 }
 
@@ -541,7 +575,7 @@ BOOST_AUTO_TEST_CASE( worker_create_test )
       REQUIRE_THROW_WITH_VALUE(op, work_begin_date, db.head_block_time() - 10);
       REQUIRE_THROW_WITH_VALUE(op, work_end_date, op.work_begin_date);
       trx.operations.back() = op;
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign(nathan_private_key);
       PUSH_TX( db, trx );
    }
 
@@ -576,9 +610,9 @@ BOOST_AUTO_TEST_CASE( worker_pay_test )
       trx.clear();
    }
    {
-      asset_burn_operation op;
+      asset_reserve_operation op;
       op.payer = account_id_type();
-      op.amount_to_burn = asset(GRAPHENE_INITIAL_SUPPLY/2);
+      op.amount_to_reserve = asset(GRAPHENE_MAX_SHARE_SUPPLY/2);
       trx.operations.push_back(op);
       PUSH_TX( db, trx, ~0 );
       trx.clear();
@@ -596,7 +630,7 @@ BOOST_AUTO_TEST_CASE( worker_pay_test )
       op.owner = nathan_id;
       trx.set_expiration(db.head_block_id());
       trx.operations.push_back(op);
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign( nathan_private_key);
       PUSH_TX( db, trx );
       trx.signatures.clear();
       REQUIRE_THROW_WITH_VALUE(op, amount, asset(1));
@@ -631,7 +665,7 @@ BOOST_AUTO_TEST_CASE( worker_pay_test )
       trx.set_expiration(db.head_block_id());
       REQUIRE_THROW_WITH_VALUE(op, amount, asset(501));
       trx.operations.back() = op;
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign( nathan_private_key);
       PUSH_TX( db, trx );
       trx.signatures.clear();
       trx.clear();
@@ -664,7 +698,7 @@ BOOST_AUTO_TEST_CASE( refund_worker_test )
       REQUIRE_THROW_WITH_VALUE(op, work_begin_date, db.head_block_time() - 10);
       REQUIRE_THROW_WITH_VALUE(op, work_end_date, op.work_begin_date);
       trx.operations.back() = op;
-      trx.sign(nathan_key_id, nathan_private_key);
+      trx.sign( nathan_private_key);
       PUSH_TX( db, trx );
       trx.clear();
    }
@@ -689,25 +723,102 @@ BOOST_AUTO_TEST_CASE( refund_worker_test )
       trx.clear();
    }
    {
-      asset_burn_operation op;
+      asset_reserve_operation op;
       op.payer = account_id_type();
-      op.amount_to_burn = asset(GRAPHENE_INITIAL_SUPPLY/2);
+      op.amount_to_reserve = asset(GRAPHENE_MAX_SHARE_SUPPLY/2);
       trx.operations.push_back(op);
       PUSH_TX( db, trx, ~0 );
       trx.clear();
    }
 
    // auto supply = asset_id_type()(db).dynamic_data(db).current_supply;
-   verify_asset_supplies();
+   verify_asset_supplies(db);
    generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
-   verify_asset_supplies();
+   verify_asset_supplies(db);
    BOOST_CHECK_EQUAL(worker_id_type()(db).worker.get<refund_worker_type>().total_burned.value, 1000);
    generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
-   verify_asset_supplies();
+   verify_asset_supplies(db);
    BOOST_CHECK_EQUAL(worker_id_type()(db).worker.get<refund_worker_type>().total_burned.value, 2000);
    generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
    BOOST_CHECK(!db.get(worker_id_type()).is_active(db.head_block_time()));
    BOOST_CHECK_EQUAL(worker_id_type()(db).worker.get<refund_worker_type>().total_burned.value, 2000);
+}FC_LOG_AND_RETHROW()}
+
+/**
+ * Create a burn worker, vote it in, make sure funds are destroyed.
+ */
+
+BOOST_AUTO_TEST_CASE( burn_worker_test )
+{try{
+   ACTOR(nathan);
+   upgrade_to_lifetime_member(nathan_id);
+   generate_block();
+   generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
+   trx.set_expiration(db.head_block_id());
+
+   {
+      worker_create_operation op;
+      op.owner = nathan_id;
+      op.daily_pay = 1000;
+      op.initializer = burn_worker_type::initializer();
+      op.work_begin_date = db.head_block_time() + 10;
+      op.work_end_date = op.work_begin_date + fc::days(2);
+      trx.clear();
+      trx.operations.push_back(op);
+      REQUIRE_THROW_WITH_VALUE(op, daily_pay, -1);
+      REQUIRE_THROW_WITH_VALUE(op, daily_pay, 0);
+      REQUIRE_THROW_WITH_VALUE(op, owner, account_id_type(1000));
+      REQUIRE_THROW_WITH_VALUE(op, work_begin_date, db.head_block_time() - 10);
+      REQUIRE_THROW_WITH_VALUE(op, work_end_date, op.work_begin_date);
+      trx.operations.back() = op;
+      trx.sign( nathan_private_key);
+      PUSH_TX( db, trx );
+      trx.clear();
+   }
+
+   const worker_object& worker = worker_id_type()(db);
+   BOOST_CHECK(worker.worker_account == nathan_id);
+   BOOST_CHECK(worker.daily_pay == 1000);
+   BOOST_CHECK(worker.work_begin_date == db.head_block_time() + 10);
+   BOOST_CHECK(worker.work_end_date == db.head_block_time() + 10 + fc::days(2));
+   BOOST_CHECK(worker.vote_for.type() == vote_id_type::worker);
+   BOOST_CHECK(worker.vote_against.type() == vote_id_type::worker);
+
+   transfer(genesis_account, nathan_id, asset(100000));
+
+   {
+      account_update_operation op;
+      op.account = nathan_id;
+      op.new_options = nathan_id(db).options;
+      op.new_options->votes.insert(worker_id_type()(db).vote_for);
+      trx.operations.push_back(op);
+      PUSH_TX( db, trx, ~0 );
+      trx.clear();
+   }
+   {
+      // refund some asset to fill up the pool
+      asset_reserve_operation op;
+      op.payer = account_id_type();
+      op.amount_to_reserve = asset(GRAPHENE_MAX_SHARE_SUPPLY/2);
+      trx.operations.push_back(op);
+      PUSH_TX( db, trx, ~0 );
+      trx.clear();
+   }
+
+   BOOST_CHECK_EQUAL( get_balance(GRAPHENE_NULL_ACCOUNT, asset_id_type()), 0 );
+   verify_asset_supplies(db);
+   generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
+   verify_asset_supplies(db);
+   BOOST_CHECK_EQUAL(worker_id_type()(db).worker.get<burn_worker_type>().total_burned.value, 1000);
+   BOOST_CHECK_EQUAL( get_balance(GRAPHENE_NULL_ACCOUNT, asset_id_type()), 1000 );
+   generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
+   verify_asset_supplies(db);
+   BOOST_CHECK_EQUAL(worker_id_type()(db).worker.get<burn_worker_type>().total_burned.value, 2000);
+   BOOST_CHECK_EQUAL( get_balance(GRAPHENE_NULL_ACCOUNT, asset_id_type()), 2000 );
+   generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
+   BOOST_CHECK(!db.get(worker_id_type()).is_active(db.head_block_time()));
+   BOOST_CHECK_EQUAL(worker_id_type()(db).worker.get<burn_worker_type>().total_burned.value, 2000);
+   BOOST_CHECK_EQUAL( get_balance(GRAPHENE_NULL_ACCOUNT, asset_id_type()), 2000 );
 }FC_LOG_AND_RETHROW()}
 
 BOOST_AUTO_TEST_CASE_EXPECTED_FAILURES( unimp_force_settlement_unavailable, 1 )
@@ -840,11 +951,9 @@ BOOST_AUTO_TEST_CASE( assert_op_test )
    // create some objects
    auto nathan_private_key = generate_private_key("nathan");
    public_key_type nathan_public_key = nathan_private_key.get_public_key();
-   key_id_type nathan_key_id = register_key(nathan_public_key).id;
-   account_id_type nathan_id = create_account("nathan", nathan_key_id).id;
+   account_id_type nathan_id = create_account("nathan", nathan_public_key).id;
 
    assert_operation op;
-   decltype(key_object::key_data) lit_key = nathan_public_key;
 
    // nathan checks that his public key is equal to the given value.
    op.fee_paying_account = nathan_id;
@@ -854,17 +963,56 @@ BOOST_AUTO_TEST_CASE( assert_op_test )
       predicate(pred::account_name_eq_lit{ nathan_id, "nathan" })
       ));
    trx.operations.push_back(op);
-   trx.sign(nathan_key_id, nathan_private_key);
+   trx.sign(nathan_private_key);
    PUSH_TX( db, trx );
 
    // nathan checks that his public key is not equal to the given value (fail)
    op.predicates.back() = fc::raw::pack(predicate(pred::account_name_eq_lit{ nathan_id, "dan" }));
    trx.operations.back() = op;
-   trx.sign(nathan_key_id, nathan_private_key);
+   trx.sign(nathan_private_key);
    BOOST_CHECK_THROW( PUSH_TX( db, trx ), fc::exception );
    } FC_LOG_AND_RETHROW()
 }
 
+BOOST_AUTO_TEST_CASE( balance_object_test )
+{ try {
+   // Intentionally overriding the fixture's db; I need to control genesis on this one.
+   database db;
+   fc::temp_directory td;
+   genesis_state.initial_balances.push_back({generate_private_key("n").get_public_key(), GRAPHENE_SYMBOL, 1});
+   genesis_state.initial_balances.push_back({generate_private_key("x").get_public_key(), GRAPHENE_SYMBOL, 1});
+   // TODO: vesting genesis balances
+   genesis_state.initial_accounts.emplace_back("n", generate_private_key("n").get_public_key());
+
+   db.open(td.path(), genesis_state);
+   const balance_object& balance = balance_id_type()(db);
+   BOOST_CHECK_EQUAL(balance.balance.amount.value, 1);
+   BOOST_CHECK_EQUAL(balance_id_type(1)(db).balance.amount.value, 1);
+
+   balance_claim_operation op;
+   op.deposit_to_account = db.get_index_type<account_index>().indices().get<by_name>().find("n")->get_id();
+   op.total_claimed = asset(1);
+   op.balance_to_claim = balance_id_type(1);
+   op.balance_owner_key = generate_private_key("x").get_public_key();
+   trx.operations = {op};
+   trx.sign(generate_private_key("n"));
+   // Fail because I'm claiming from an address which hasn't signed
+   BOOST_CHECK_THROW(db.push_transaction(trx), fc::exception);
+   trx.clear();
+   op.balance_to_claim = balance_id_type();
+   op.balance_owner_key = generate_private_key("n").get_public_key();
+   trx.operations = {op};
+   trx.sign(generate_private_key("n"));
+   db.push_transaction(trx);
+
+   // Not using fixture's get_balance() here because it uses fixture's db, not my override
+   BOOST_CHECK_EQUAL(db.get_balance(op.deposit_to_account, asset_id_type()).amount.value, 1);
+   BOOST_CHECK(db.find_object(balance_id_type()) == nullptr);
+   BOOST_CHECK(db.find_object(balance_id_type(1)) != nullptr);
+} FC_LOG_AND_RETHROW() }
+
 // TODO:  Write linear VBO tests
 
 BOOST_AUTO_TEST_SUITE_END()
+
+

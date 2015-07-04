@@ -59,6 +59,13 @@ namespace graphene { namespace app {
     {
        return _db.fetch_block_by_number(block_num);
     }
+    processed_transaction database_api::get_transaction(uint32_t block_num, uint32_t trx_num)const
+    {
+       auto opt_block = _db.fetch_block_by_number(block_num);
+       FC_ASSERT( opt_block );
+       FC_ASSERT( opt_block->transactions.size() > trx_num );
+       return opt_block->transactions[trx_num];
+    }
 
     vector<optional<account_object>> database_api::lookup_account_names(const vector<string>& account_names)const
     {
@@ -96,17 +103,6 @@ namespace graphene { namespace app {
        return _db.get(dynamic_global_property_id_type());
     }
 
-    vector<optional<key_object>> database_api::get_keys(const vector<key_id_type>& key_ids)const
-    {
-       vector<optional<key_object>> result; result.reserve(key_ids.size());
-       std::transform(key_ids.begin(), key_ids.end(), std::back_inserter(result),
-                      [this](key_id_type id) -> optional<key_object> {
-          if(auto o = _db.find(id))
-             return *o;
-          return {};
-       });
-       return result;
-    }
 
     vector<optional<account_object>> database_api::get_accounts(const vector<account_id_type>& account_ids)const
     {
@@ -267,10 +263,86 @@ namespace graphene { namespace app {
        return {};
     }
 
+    uint64_t database_api::get_witness_count()const
+    {
+       return _db.get_index_type<witness_index>().indices().size();
+    }
+
+    map<string, witness_id_type> database_api::lookup_witness_accounts(const string& lower_bound_name, uint32_t limit)const
+    {
+       FC_ASSERT( limit <= 1000 );
+       const auto& witnesses_by_id = _db.get_index_type<witness_index>().indices().get<by_id>();
+
+       // we want to order witnesses by account name, but that name is in the account object
+       // so the witness_index doesn't have a quick way to access it.
+       // get all the names and look them all up, sort them, then figure out what
+       // records to return.  This could be optimized, but we expect the 
+       // number of witnesses to be few and the frequency of calls to be rare
+       std::map<std::string, witness_id_type> witnesses_by_account_name;
+       for (const witness_object& witness : witnesses_by_id)
+           if (auto account_iter = _db.find(witness.witness_account))
+               if (account_iter->name >= lower_bound_name) // we can ignore anything below lower_bound_name 
+                   witnesses_by_account_name.insert(std::make_pair(account_iter->name, witness.id));
+
+       auto end_iter = witnesses_by_account_name.begin();
+       while (end_iter != witnesses_by_account_name.end() && limit--)
+           ++end_iter;
+       witnesses_by_account_name.erase(end_iter, witnesses_by_account_name.end());
+       return witnesses_by_account_name;
+    }
+   
+    map<string, delegate_id_type> database_api::lookup_delegate_accounts(const string& lower_bound_name, uint32_t limit)const
+    {
+       FC_ASSERT( limit <= 1000 );
+       const auto& delegates_by_id = _db.get_index_type<delegate_index>().indices().get<by_id>();
+
+       // we want to order delegates by account name, but that name is in the account object
+       // so the delegate_index doesn't have a quick way to access it.
+       // get all the names and look them all up, sort them, then figure out what
+       // records to return.  This could be optimized, but we expect the 
+       // number of delegates to be few and the frequency of calls to be rare
+       std::map<std::string, delegate_id_type> delegates_by_account_name;
+       for (const delegate_object& delegate : delegates_by_id)
+           if (auto account_iter = _db.find(delegate.delegate_account))
+               if (account_iter->name >= lower_bound_name) // we can ignore anything below lower_bound_name 
+                   delegates_by_account_name.insert(std::make_pair(account_iter->name, delegate.id));
+
+       auto end_iter = delegates_by_account_name.begin();
+       while (end_iter != delegates_by_account_name.end() && limit--)
+           ++end_iter;
+       delegates_by_account_name.erase(end_iter, delegates_by_account_name.end());
+       return delegates_by_account_name;
+    }
+   
+    vector<optional<witness_object>> database_api::get_witnesses(const vector<witness_id_type>& witness_ids)const
+    {
+       vector<optional<witness_object>> result; result.reserve(witness_ids.size());
+       std::transform(witness_ids.begin(), witness_ids.end(), std::back_inserter(result),
+                      [this](witness_id_type id) -> optional<witness_object> {
+          if(auto o = _db.find(id))
+             return *o;
+          return {};
+       });
+       return result;
+    }
+
+    vector<optional<delegate_object>> database_api::get_delegates(const vector<delegate_id_type>& delegate_ids)const
+    {
+       vector<optional<delegate_object>> result; result.reserve(delegate_ids.size());
+       std::transform(delegate_ids.begin(), delegate_ids.end(), std::back_inserter(result),
+                      [this](delegate_id_type id) -> optional<delegate_object> {
+          if(auto o = _db.find(id))
+             return *o;
+          return {};
+       });
+       return result;
+    }
+
     login_api::login_api(application& a)
     :_app(a)
     {
     }
+
     login_api::~login_api()
     {
     }
@@ -286,6 +358,29 @@ namespace graphene { namespace app {
        return true;
     }
 
+    network_api::network_api(application& a):_app(a)
+    {
+       _applied_block_connection = _app.chain_database()->applied_block.connect([this](const signed_block& b){ on_applied_block(b); });
+    }
+
+    void network_api::on_applied_block( const signed_block& b )
+    {
+       if( _callbacks.size() )
+       {
+          for( uint32_t trx_num = 0; trx_num < b.transactions.size(); ++trx_num )
+          {
+             const auto& trx = b.transactions[trx_num];
+             auto id = trx.id();
+             auto itr = _callbacks.find(id);
+             auto block_num = b.block_num();
+             if( itr != _callbacks.end() )
+             {
+                fc::async( [=](){ itr->second( fc::variant(transaction_confirmation{ id, block_num, trx_num, trx}) ); } );
+             }
+          }
+       }
+    }
+
     void network_api::add_node(const fc::ip::endpoint& ep)
     {
        _app.p2p_node()->add_node(ep);
@@ -297,6 +392,14 @@ namespace graphene { namespace app {
        _app.chain_database()->push_transaction(trx);
        _app.p2p_node()->broadcast_transaction(trx);
     }
+    void network_api::broadcast_transaction_with_callback( confirmation_callback cb, const signed_transaction& trx)
+    {
+       trx.validate();
+       _callbacks[trx.id()] = cb;
+       _app.chain_database()->push_transaction(trx);
+       _app.p2p_node()->broadcast_transaction(trx);
+    }
+
 
     std::vector<net::peer_status> network_api::get_connected_peers() const
     {
@@ -428,7 +531,7 @@ namespace graphene { namespace app {
        return fc::to_hex(fc::raw::pack(trx));
     }
 
-    vector<operation_history_object> history_api::get_account_history(account_id_type account, operation_history_id_type stop, int limit, operation_history_id_type start) const
+    vector<operation_history_object> history_api::get_account_history(account_id_type account, operation_history_id_type stop, unsigned limit, operation_history_id_type start) const
     {
        FC_ASSERT(_app.chain_database());
        const auto& db = *_app.chain_database();
@@ -485,15 +588,33 @@ namespace graphene { namespace app {
     /**
      *  @return all accounts that referr to the key or account id in their owner or active authorities.
      */
-    vector<account_id_type> database_api::get_account_references( object_id_type key_or_account_id )const
+    vector<account_id_type> database_api::get_account_references( account_id_type account_id )const
     {
        const auto& idx = _db.get_index_type<account_index>();
        const auto& aidx = dynamic_cast<const primary_index<account_index>&>(idx);
        const auto& refs = aidx.get_secondary_index<graphene::chain::account_member_index>();
-       auto itr = refs.account_to_memberships.find(key_or_account_id);
+       auto itr = refs.account_to_account_memberships.find(account_id);
        vector<account_id_type> result;
 
-       if( itr != refs.account_to_memberships.end() )
+       if( itr != refs.account_to_account_memberships.end() )
+       {
+          result.reserve( itr->second.size() );
+          for( auto item : itr->second ) result.push_back(item);
+       }
+       return result;
+    }
+    /**
+     *  @return all accounts that referr to the key or account id in their owner or active authorities.
+     */
+    vector<account_id_type> database_api::get_key_references( public_key_type key )const
+    {
+       const auto& idx = _db.get_index_type<account_index>();
+       const auto& aidx = dynamic_cast<const primary_index<account_index>&>(idx);
+       const auto& refs = aidx.get_secondary_index<graphene::chain::account_member_index>();
+       auto itr = refs.account_to_key_memberships.find(key);
+       vector<account_id_type> result;
+
+       if( itr != refs.account_to_key_memberships.end() )
        {
           result.reserve( itr->second.size() );
           for( auto item : itr->second ) result.push_back(item);
@@ -518,24 +639,6 @@ namespace graphene { namespace app {
        });
        return result;
     }
-
-    /**
-     *  @return all key_ids that have been registered for a given address. 
-     */
-    vector<key_id_type>  database_api::get_keys_for_address( const address& a )const
-    { try {
-       vector<key_id_type> result;
-       const auto& idx = _db.get_index_type<key_index>();
-       const auto& aidx = idx.indices().get<by_address>();
-       auto itr = aidx.find(a);
-
-       while( itr != aidx.end() && itr->key_address() == a )
-       {
-          result.push_back( itr->id );
-          ++itr;
-       }
-       return result;
-    } FC_CAPTURE_AND_RETHROW( (a) ) } 
 
     vector<call_order_object> database_api::get_margin_positions( const account_id_type& id )const
     { try {

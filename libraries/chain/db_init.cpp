@@ -23,7 +23,6 @@
 #include <graphene/chain/block_summary_object.hpp>
 #include <graphene/chain/delegate_object.hpp>
 #include <graphene/chain/global_property_object.hpp>
-#include <graphene/chain/key_object.hpp>
 #include <graphene/chain/balance_object.hpp>
 #include <graphene/chain/limit_order_object.hpp>
 #include <graphene/chain/proposal_object.hpp>
@@ -41,7 +40,6 @@
 #include <graphene/chain/custom_evaluator.hpp>
 #include <graphene/chain/delegate_evaluator.hpp>
 #include <graphene/chain/global_parameters_evaluator.hpp>
-#include <graphene/chain/key_evaluator.hpp>
 #include <graphene/chain/limit_order_evaluator.hpp>
 #include <graphene/chain/proposal_evaluator.hpp>
 #include <graphene/chain/call_order_evaluator.hpp>
@@ -53,15 +51,15 @@
 #include <graphene/chain/balance_evaluator.hpp>
 
 #include <fc/uint128.hpp>
-
 #include <fc/crypto/digest.hpp>
+
+#include <boost/algorithm/string.hpp>
 
 namespace graphene { namespace chain {
 
 void database::initialize_evaluators()
 {
    _operation_evaluators.resize(255);
-   register_evaluator<key_create_evaluator>();
    register_evaluator<account_create_evaluator>();
    register_evaluator<account_update_evaluator>();
    register_evaluator<account_upgrade_evaluator>();
@@ -70,7 +68,7 @@ void database::initialize_evaluators()
    register_evaluator<custom_evaluator>();
    register_evaluator<asset_create_evaluator>();
    register_evaluator<asset_issue_evaluator>();
-   register_evaluator<asset_burn_evaluator>();
+   register_evaluator<asset_reserve_evaluator>();
    register_evaluator<asset_update_evaluator>();
    register_evaluator<asset_update_bitasset_evaluator>();
    register_evaluator<asset_update_feed_producers_evaluator>();
@@ -81,6 +79,7 @@ void database::initialize_evaluators()
    register_evaluator<limit_order_cancel_evaluator>();
    register_evaluator<call_order_update_evaluator>();
    register_evaluator<transfer_evaluator>();
+   register_evaluator<override_transfer_evaluator>();
    register_evaluator<asset_fund_fee_pool_evaluator>();
    register_evaluator<asset_publish_feeds_evaluator>();
    register_evaluator<proposal_create_evaluator>();
@@ -111,20 +110,17 @@ void database::initialize_indexes()
    acnt_index->add_secondary_index<account_member_index>();
    acnt_index->add_secondary_index<account_referrer_index>();
 
-   // this is the fast effecient version for validation only
-   // add_index< primary_index<simple_index<key_object>> >();
-   
-   // this is the slower version designed to aid GUI use.  We will
-   // default to the "slow" version until we need a faster version.
-   add_index< primary_index<key_index> >();
-
    add_index< primary_index<delegate_index> >();
    add_index< primary_index<witness_index> >();
    add_index< primary_index<limit_order_index > >();
    add_index< primary_index<call_order_index > >();
-   add_index< primary_index<proposal_index > >();
+
+   auto prop_index = add_index< primary_index<proposal_index > >();
+   prop_index->add_secondary_index<required_approval_index>();
+
    add_index< primary_index<withdraw_permission_index > >();
-   add_index< primary_index<simple_index<vesting_balance_object> > >();
+   //add_index< primary_index<vesting_balance_index> >();
+   add_index< primary_index<simple_index<vesting_balance_object>> >();
    add_index< primary_index<worker_index> >();
    add_index< primary_index<balance_index> >();
 
@@ -142,7 +138,7 @@ void database::initialize_indexes()
 
 void database::init_genesis(const genesis_state_type& genesis_state)
 { try {
-   FC_ASSERT(genesis_state.initial_witnesses.size() > 0,
+   FC_ASSERT(genesis_state.initial_witness_candidates.size() > 0,
              "Cannot start a chain with zero witnesses.");
 
    _undo_db.disable();
@@ -158,13 +154,10 @@ void database::init_genesis(const genesis_state_type& genesis_state)
 
    transaction_evaluation_state genesis_eval_state(this);
 
-   // Create initial accounts
+   // Create blockchain accounts
    fc::ecc::private_key null_private_key = fc::ecc::private_key::regenerate(fc::sha256::hash(string("null_key")));
-   create<key_object>( [&null_private_key](key_object& k) {
-       k.key_data = public_key_type(null_private_key.get_public_key());
-   });
-   create<account_balance_object>( [](account_balance_object& b) {
-      b.balance = GRAPHENE_INITIAL_SUPPLY;
+   create<account_balance_object>([](account_balance_object& b) {
+      b.balance = GRAPHENE_MAX_SHARE_SUPPLY;
    });
    const account_object& committee_account =
       create<account_object>( [&](account_object& n) {
@@ -204,8 +197,8 @@ void database::init_genesis(const genesis_state_type& genesis_state)
        a.active.weight_threshold = 1;
        a.registrar = a.lifetime_referrer = a.referrer = GRAPHENE_NULL_ACCOUNT;
        a.membership_expiration_date = time_point_sec::maximum();
-       a.network_fee_percentage = GRAPHENE_DEFAULT_NETWORK_PERCENT_OF_FEE;
-       a.lifetime_referrer_fee_percentage = GRAPHENE_100_PERCENT - GRAPHENE_DEFAULT_NETWORK_PERCENT_OF_FEE;
+       a.network_fee_percentage = 0;
+       a.lifetime_referrer_fee_percentage = GRAPHENE_100_PERCENT;
    }).get_id() == GRAPHENE_NULL_ACCOUNT);
    FC_ASSERT(create<account_object>([this](account_object& a) {
        a.name = "temp-account";
@@ -220,13 +213,13 @@ void database::init_genesis(const genesis_state_type& genesis_state)
 
    // Create core asset
    const asset_dynamic_data_object& dyn_asset =
-      create<asset_dynamic_data_object>( [&]( asset_dynamic_data_object& a ) {
-         a.current_supply = GRAPHENE_INITIAL_SUPPLY;
+      create<asset_dynamic_data_object>([&](asset_dynamic_data_object& a) {
+         a.current_supply = GRAPHENE_MAX_SHARE_SUPPLY;
       });
    const asset_object& core_asset =
      create<asset_object>( [&]( asset_object& a ) {
          a.symbol = GRAPHENE_SYMBOL;
-         a.options.max_supply = GRAPHENE_INITIAL_SUPPLY;
+         a.options.max_supply = GRAPHENE_MAX_SHARE_SUPPLY;
          a.precision = GRAPHENE_BLOCKCHAIN_PRECISION_DIGITS;
          a.options.flags = 0;
          a.options.issuer_permissions = 0;
@@ -255,98 +248,201 @@ void database::init_genesis(const genesis_state_type& genesis_state)
    });
    create<block_summary_object>([&](block_summary_object&) {});
 
-   // Create user accounts, apply initial stake allocation
-   if( !genesis_state.allocation_targets.empty() )
+   // Create initial accounts
+   for( const auto& account : genesis_state.initial_accounts )
    {
-      share_type total_allocation = 0;
-      for( const auto& handout : genesis_state.allocation_targets )
-         total_allocation += handout.weight;
-
-      for( const auto& handout : genesis_state.allocation_targets )
+      /*
+      key_id_type key_id = apply_operation(genesis_eval_state,
+                                           key_create_operation({asset(),
+                                                                 GRAPHENE_TEMP_ACCOUNT,
+                                                                 account.owner_key})).get<object_id_type>();
+                                                                 */
+      account_create_operation cop;
+      cop.name = account.name;
+      cop.registrar = GRAPHENE_TEMP_ACCOUNT;
+      cop.owner = authority(1, account.owner_key, 1);
+      if( account.owner_key != account.active_key )
       {
-         asset amount(handout.weight);
-
-         key_id_type key_id = apply_operation(genesis_eval_state,
-                                              key_create_operation({asset(),
-                                                                    committee_account.id,
-                                                                    handout.addr})).get<object_id_type>();
-         account_create_operation cop;
-         cop.name = handout.name;
-         cop.registrar = account_id_type(1);
-         cop.active = authority(1, key_id, 1);
-         cop.owner = cop.active;
-         cop.options.memo_key = key_id;
-         account_id_type account_id(apply_operation(genesis_eval_state, cop).get<object_id_type>());
-
-         if( handout.is_lifetime_member )
-         {
-             account_upgrade_operation op;
-             op.account_to_upgrade = account_id;
-             op.upgrade_to_lifetime_member = true;
-             apply_operation(genesis_eval_state, op);
-         }
-
-         if( amount.amount > 0 )
-         {
-            amount.amount = ((fc::uint128(amount.amount.value) * GRAPHENE_INITIAL_SUPPLY)/total_allocation.value).to_uint64();
-            apply_operation(genesis_eval_state, transfer_operation({asset(),
-                                                                    committee_account.id,
-                                                                    account_id,
-                                                                    amount,
-                                                                    memo_data()
-                                                                   }));
-         }
+         /*
+         key_id = apply_operation(genesis_eval_state,
+                                  key_create_operation({asset(),
+                                                        GRAPHENE_TEMP_ACCOUNT,
+                                                        account.owner_key})).get<object_id_type>();
+                                                        */
+         cop.active = authority(1, account.owner_key, 1);
+      } else {
+         cop.active = cop.owner;
       }
+      cop.options.memo_key = account.owner_key;
+      account_id_type account_id(apply_operation(genesis_eval_state, cop).get<object_id_type>());
 
-      if( total_allocation != 0 )
+      if( account.is_lifetime_member )
       {
-         asset leftovers = get_balance(account_id_type(), asset_id_type());
-         if( leftovers.amount > 0 )
-         {
-            modify(*get_index_type<account_balance_index>().indices().get<by_balance>().find(boost::make_tuple(account_id_type(), asset_id_type())),
-                   [](account_balance_object& b) {
-               b.adjust_balance(-b.get_balance());
-            });
-            modify(core_asset.dynamic_asset_data_id(*this), [&leftovers](asset_dynamic_data_object& d) {
-               d.accumulated_fees += leftovers.amount;
-            });
-         }
+          account_upgrade_operation op;
+          op.account_to_upgrade = account_id;
+          op.upgrade_to_lifetime_member = true;
+          apply_operation(genesis_eval_state, op);
       }
    }
 
-   flat_set<delegate_id_type> init_delegates;
-   flat_set<witness_id_type> init_witnesses;
    const auto& accounts_by_name = get_index_type<account_index>().indices().get<by_name>();
+   auto get_account_id = [&accounts_by_name](const string& name) {
+      auto itr = accounts_by_name.find(name);
+      FC_ASSERT(itr != accounts_by_name.end());
+      return itr->get_id();
+   };
+
+   // Create initial assets
+   const auto& assets_by_symbol = get_index_type<asset_index>().indices().get<by_symbol>();
+   auto get_asset_id = [&assets_by_symbol](const string& symbol) {
+      auto itr = assets_by_symbol.find(symbol);
+      FC_ASSERT(itr != assets_by_symbol.end());
+      return itr->get_id();
+   };
+
+   for( const genesis_state_type::initial_asset_type& asset : genesis_state.initial_assets )
+   {
+      asset_dynamic_data_id_type dynamic_data_id;
+      optional<asset_bitasset_data_id_type> bitasset_data_id;
+      if( asset.bitasset_options.valid() )
+      {
+         share_type total_allocated;
+         asset_id_type new_asset_id = get_index_type<asset_index>().get_next_id();
+         asset_id_type collateral_asset_id = get_asset_id(asset.bitasset_options->backing_asset_symbol);
+
+         int collateral_holder_number = 0;
+         for( const auto& collateral_rec : asset.bitasset_options->collateral_records )
+         {
+            /*
+            key_id_type key_id = apply_operation(genesis_eval_state,
+                                                 key_create_operation{{},
+                                                                      GRAPHENE_TEMP_ACCOUNT,
+                                                                      collateral_rec.owner}).get<object_id_type>();
+                                                                      */
+            account_create_operation cop;
+            cop.name = asset.symbol + "-collateral-holder-" + std::to_string(collateral_holder_number);
+            boost::algorithm::to_lower(cop.name);
+            cop.registrar = GRAPHENE_TEMP_ACCOUNT;
+            cop.owner = authority(1, collateral_rec.owner, 1);
+            cop.active = cop.owner;
+            account_id_type owner_account_id = apply_operation(genesis_eval_state, cop).get<object_id_type>();
+
+            create<call_order_object>([&](call_order_object& c) {
+               c.borrower = owner_account_id;
+               c.collateral = collateral_rec.collateral;
+               c.debt = collateral_rec.debt;
+               c.call_price = price::call_price(chain::asset(c.debt, new_asset_id),
+                                                chain::asset(c.collateral, collateral_asset_id),
+                                                asset.bitasset_options->maintenance_collateral_ratio);
+            });
+
+            total_allocated += collateral_rec.debt;
+         }
+
+         bitasset_data_id = create<asset_bitasset_data_object>([&](asset_bitasset_data_object& b) {
+            b.options.feed_lifetime_sec = asset.bitasset_options->feed_lifetime_sec;
+            b.options.minimum_feeds = asset.bitasset_options->minimum_feeds;
+            b.options.force_settlement_delay_sec = asset.bitasset_options->force_settlement_delay_sec;
+            b.options.force_settlement_offset_percent = asset.bitasset_options->force_settlement_offset_percent;
+            b.options.maximum_force_settlement_volume = asset.bitasset_options->maximum_force_settlement_volume;
+            b.options.short_backing_asset = get_asset_id(asset.bitasset_options->backing_asset_symbol);
+         }).id;
+
+         dynamic_data_id = create<asset_dynamic_data_object>([&](asset_dynamic_data_object& d) {
+            d.current_supply = total_allocated;
+            d.accumulated_fees = asset.initial_accumulated_fees;
+         }).id;
+      } else
+         dynamic_data_id = create<asset_dynamic_data_object>([&](asset_dynamic_data_object& d) {
+            d.accumulated_fees = asset.initial_accumulated_fees;
+         }).id;
+
+      create<asset_object>([&](asset_object& a) {
+         a.symbol = asset.symbol;
+         a.options.description = asset.description;
+         a.precision = asset.precision;
+         a.issuer = get_account_id(asset.issuer_name);
+         a.options.max_supply = asset.max_supply;
+         a.options.market_fee_percent = asset.market_fee_percent;
+         a.options.max_market_fee = asset.max_market_fee;
+         a.options.issuer_permissions = asset.issuer_permissions;
+         a.options.flags = asset.flags;
+
+         a.dynamic_asset_data_id = dynamic_data_id;
+         a.bitasset_data_id = bitasset_data_id;
+      });
+   }
+
+   // Create initial balances
+   share_type total_allocation;
+   for( const auto& handout : genesis_state.initial_balances )
+   {
+      create<balance_object>([&handout,&assets_by_symbol,total_allocation](balance_object& b) {
+         b.balance = asset(handout.amount, assets_by_symbol.find(handout.asset_symbol)->get_id());
+         b.owner = handout.owner;
+      });
+      total_allocation += handout.amount;
+   }
+
+   // Create initial vesting balances
+   for( const genesis_state_type::initial_vesting_balance_type& vest : genesis_state.initial_vesting_balances )
+   {
+      create<balance_object>([&](balance_object& b) {
+         b.owner = vest.owner;
+         b.balance = asset(vest.amount, assets_by_symbol.find(vest.asset_symbol)->get_id());
+
+         linear_vesting_policy policy;
+         policy.begin_timestamp = vest.begin_timestamp;
+         policy.vesting_cliff_seconds = 0;
+         policy.vesting_duration_seconds = vest.vesting_duration_seconds;
+         policy.begin_balance = vest.begin_balance;
+
+         b.vesting_policy = std::move(policy);
+      });
+      total_allocation += vest.amount;
+   }
+
+   // Set current supply based on allocations, if they happened
+   if( total_allocation > 0 )
+   {
+      modify(dyn_asset, [total_allocation](asset_dynamic_data_object& d) {
+         d.current_supply = total_allocation;
+      });
+      adjust_balance(GRAPHENE_COMMITTEE_ACCOUNT, -get_balance(GRAPHENE_COMMITTEE_ACCOUNT,{}));
+   }
 
    // Create initial witnesses and delegates
-   std::for_each(genesis_state.initial_witnesses.begin(), genesis_state.initial_witnesses.end(),
+   std::for_each(genesis_state.initial_witness_candidates.begin(), genesis_state.initial_witness_candidates.end(),
                  [&](const genesis_state_type::initial_witness_type& witness) {
-      const account_object& witness_account = *accounts_by_name.find(witness.owner_name);
-      const key_object& signing_key = create<key_object>([&witness](key_object& k) { k.key_data = witness.block_signing_key; });
+                 /*
+      const key_object& signing_key = create<key_object>([&witness](key_object& k) {
+         k.key_data = witness.block_signing_key;
+      });
+      */
 
       witness_create_operation op;
-      op.block_signing_key = signing_key.get_id();
+      op.block_signing_key = witness.block_signing_key;
       op.initial_secret = witness.initial_secret;
-      op.witness_account = witness_account.get_id();
-      witness_id_type id = apply_operation(genesis_eval_state, op).get<object_id_type>();
-      init_witnesses.emplace(id);
+      op.witness_account = get_account_id(witness.owner_name);
+      apply_operation(genesis_eval_state, op).get<object_id_type>();
    });
-   std::for_each(genesis_state.initial_committee.begin(), genesis_state.initial_committee.end(),
+   std::for_each(genesis_state.initial_committee_candidates.begin(), genesis_state.initial_committee_candidates.end(),
                  [&](const genesis_state_type::initial_committee_member_type& member) {
-      const account_object& member_account = *accounts_by_name.find(member.owner_name);
       delegate_create_operation op;
-      op.delegate_account = member_account.get_id();
-      delegate_id_type id = apply_operation(genesis_eval_state, op).get<object_id_type>();
-      init_delegates.emplace(id);
+      op.delegate_account = get_account_id(member.owner_name);
+      apply_operation(genesis_eval_state, op).get<object_id_type>();
    });
 
-   // Set initial witnesses and committee as active
+   // Set active witnesses
    modify(get_global_properties(), [&](global_property_object& p) {
-       p.active_delegates = vector<delegate_id_type>(init_delegates.begin(), init_delegates.end());
-       p.active_witnesses = init_witnesses;
-       std::transform(p.active_witnesses.begin(), p.active_witnesses.end(),
-                      std::inserter(p.witness_accounts, p.witness_accounts.begin()),
-                      [&](witness_id_type id) { return get(id).witness_account; });
+      auto idx = get_index_type<witness_index>().indices();
+      for( auto itr = idx.begin();
+           itr != idx.end() && p.active_witnesses.size() < genesis_state.initial_active_witnesses;
+           ++itr )
+      {
+          p.active_witnesses.insert(itr->id);
+          p.witness_accounts.insert(itr->witness_account);
+      }
    });
 
    // Initialize witness schedule
@@ -359,6 +455,8 @@ void database::init_genesis(const genesis_state_type& genesis_state)
 
       witness_scheduler_rng rng(_wso.rng_seed.begin(), GRAPHENE_NEAR_SCHEDULE_CTR_IV);
 
+      auto init_witnesses = get_global_properties().active_witnesses;
+
       _wso.scheduler = witness_scheduler();
       _wso.scheduler._min_token_count = init_witnesses.size() / 2;
       _wso.scheduler.update(init_witnesses);
@@ -367,7 +465,7 @@ void database::init_genesis(const genesis_state_type& genesis_state)
          _wso.scheduler.produce_schedule(rng);
 
       _wso.last_scheduling_block = 0;
-   }) ;
+   });
    assert( wso.id == witness_schedule_id_type() );
 
    // Enable fees

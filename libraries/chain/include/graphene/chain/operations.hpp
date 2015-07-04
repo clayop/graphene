@@ -130,14 +130,20 @@ namespace graphene { namespace chain {
    };
 
    /**
-    * This operation will claim all initial balance objects owned by any of the addresses and
-    * deposit them into the deposit_to_account.  
+    * @brief Claim a balance in a @ref balanc_object
+    *
+    * This operation is used to claim the balance in a given @ref balance_object. If the balance object contains a
+    * vesting balance, @ref total_claimed must be set to zero, and all available vested funds will be claimed. If the
+    * object contains a non-vesting balance, @ref total_claimed must be the full balance of the object.
+    *
+    * This operation returns the total amount claimed.
     */
    struct balance_claim_operation
    {
       asset             fee;
       account_id_type   deposit_to_account;
-      flat_set<address> owners;
+      balance_id_type   balance_to_claim;
+      public_key_type   balance_owner_key;
       asset             total_claimed;
 
       account_id_type fee_payer()const { return deposit_to_account; }
@@ -145,26 +151,12 @@ namespace graphene { namespace chain {
       share_type      calculate_fee(const fee_schedule_type& k)const { return 0; }
       void            validate()const;
 
-      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), total_claimed-fee); }
+      void get_balance_delta(balance_accumulator& acc, const operation_result& result)const {
+         acc.adjust(deposit_to_account, result.get<asset>());
+         acc.adjust(fee_payer(), -fee);
+      }
    };
 
-   /**
-    *  @brief reserves a new ID to refer to a particular key or address.
-    *  @ingroup operations
-    */
-   struct key_create_operation
-   {
-      asset            fee;
-      account_id_type  fee_paying_account;
-      static_variant<address,public_key_type> key_data;
-
-      account_id_type fee_payer()const { return fee_paying_account; }
-      void            get_required_auth(flat_set<account_id_type>& active_auth_set , flat_set<account_id_type>&)const;
-      share_type      calculate_fee(const fee_schedule_type& k)const{ return k.key_create_fee; }
-      void            validate()const;
-
-      void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const { acc.adjust(fee_payer(), -fee); }
-   };
 
    /**
     *  @ingroup operations
@@ -359,7 +351,7 @@ namespace graphene { namespace chain {
       /// The account which owns the delegate. This account pays the fee for this operation.
       account_id_type   witness_account;
       string            url;
-      key_id_type       block_signing_key;
+      public_key_type   block_signing_key;
       secret_hash_type  initial_secret;
 
       account_id_type fee_payer()const { return witness_account; }
@@ -450,8 +442,8 @@ namespace graphene { namespace chain {
     */
    struct memo_data
    {
-      key_id_type from;
-      key_id_type to;
+      public_key_type from;
+      public_key_type to;
       /**
        * 64 bit nonce format:
        * [  8 bits | 56 bits   ]
@@ -492,13 +484,13 @@ namespace graphene { namespace chain {
     */
    struct transfer_operation
    {
-      asset fee;
+      asset            fee;
       /// Account to transfer asset from
-      account_id_type from;
+      account_id_type  from;
       /// Account to transfer asset to
-      account_id_type to;
+      account_id_type  to;
       /// The amount of asset to transfer from @ref from to @ref to
-      asset amount;
+      asset            amount;
 
       /// User provided data encrypted to the memo key of the "to" account
       optional<memo_data> memo;
@@ -514,6 +506,41 @@ namespace graphene { namespace chain {
          acc.adjust( to, amount );
       }
    };
+
+   /**
+    *  @class override_transfer_operation
+    *  @brief Allows the issuer of an asset to transfer an asset from any account to any account if they have override_authority
+    *  @ingroup operations
+    *
+    *  @pre amount.asset_id->issuer == issuer
+    *  @pre issuer != from  because this is pointless, use a normal transfer operation
+    */
+   struct override_transfer_operation
+   {
+      asset           fee;
+      account_id_type issuer;
+      /// Account to transfer asset from
+      account_id_type from;
+      /// Account to transfer asset to
+      account_id_type to;
+      /// The amount of asset to transfer from @ref from to @ref to
+      asset amount;
+
+      /// User provided data encrypted to the memo key of the "to" account
+      optional<memo_data> memo;
+
+      account_id_type fee_payer()const { return issuer; }
+      void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
+      void            validate()const;
+      share_type      calculate_fee(const fee_schedule_type& k)const;
+      void get_balance_delta( balance_accumulator& acc, const operation_result& result = asset())const
+      {
+         acc.adjust( fee_payer(), -fee );
+         acc.adjust( from, -amount );
+         acc.adjust( to, amount );
+      }
+   };
+
 
    /**
     * @ingroup operations
@@ -774,16 +801,16 @@ namespace graphene { namespace chain {
    };
 
    /**
-    * @brief used to take an asset out of circulation
+    * @brief used to take an asset out of circulation, returning to the issuer
     * @ingroup operations
     *
     * @note You cannot burn market-issued assets.
     */
-   struct asset_burn_operation
+   struct asset_reserve_operation
    {
       asset             fee;
       account_id_type   payer;
-      asset             amount_to_burn;
+      asset             amount_to_reserve;
 
       account_id_type fee_payer()const { return payer; }
       void            get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>&)const;
@@ -792,7 +819,7 @@ namespace graphene { namespace chain {
       void get_balance_delta(balance_accumulator& acc, const operation_result& result = asset())const
       {
          acc.adjust(fee_payer(), -fee);
-         acc.adjust(fee_payer(), -amount_to_burn);
+         acc.adjust(fee_payer(), -amount_to_reserve);
       }
    };
 
@@ -992,8 +1019,8 @@ namespace graphene { namespace chain {
       flat_set<account_id_type>  active_approvals_to_remove;
       flat_set<account_id_type>  owner_approvals_to_add;
       flat_set<account_id_type>  owner_approvals_to_remove;
-      flat_set<key_id_type>      key_approvals_to_add;
-      flat_set<key_id_type>      key_approvals_to_remove;
+      flat_set<public_key_type>  key_approvals_to_add;
+      flat_set<public_key_type>  key_approvals_to_remove;
 
       account_id_type fee_payer()const { return fee_paying_account; }
       void       get_required_auth(flat_set<account_id_type>& active_auth_set, flat_set<account_id_type>& owner_auth_set)const;
@@ -1212,10 +1239,10 @@ namespace graphene { namespace chain {
 
    struct linear_vesting_policy_initializer
    {
-      /** while vesting begins on begin_date, none may be claimed before the start_claim time */
-      fc::time_point_sec start_claim;
-      fc::time_point_sec begin_date;
-      uint32_t           vesting_seconds = 0;
+      /** while vesting begins on begin_timestamp, none may be claimed before vesting_cliff_seconds have passed */
+      fc::time_point_sec begin_timestamp;
+      uint32_t           vesting_cliff_seconds = 0;
+      uint32_t           vesting_duration_seconds = 0;
    };
 
    struct cdd_vesting_policy_initializer
@@ -1378,7 +1405,6 @@ namespace graphene { namespace chain {
             limit_order_create_operation,
             limit_order_cancel_operation,
             call_order_update_operation,
-            key_create_operation,
             account_create_operation,
             account_update_operation,
             account_whitelist_operation,
@@ -1389,7 +1415,7 @@ namespace graphene { namespace chain {
             asset_update_bitasset_operation,
             asset_update_feed_producers_operation,
             asset_issue_operation,
-            asset_burn_operation,
+            asset_reserve_operation,
             asset_fund_fee_pool_operation,
             asset_settle_operation,
             asset_global_settle_operation,
@@ -1411,7 +1437,8 @@ namespace graphene { namespace chain {
             worker_create_operation,
             custom_operation,
             assert_operation,
-            balance_claim_operation
+            balance_claim_operation,
+            override_transfer_operation
          > operation;
 
    /// @} // operations group
@@ -1541,11 +1568,6 @@ FC_REFLECT( graphene::chain::op_wrapper, (op) )
 FC_REFLECT( graphene::chain::memo_message, (checksum)(text) )
 FC_REFLECT( graphene::chain::memo_data, (from)(to)(nonce)(message) )
 
-FC_REFLECT( graphene::chain::key_create_operation,
-            (fee)(fee_paying_account)
-            (key_data)
-          )
-
 FC_REFLECT( graphene::chain::account_create_operation,
             (fee)(registrar)
             (referrer)(referrer_percent)
@@ -1579,6 +1601,8 @@ FC_REFLECT( graphene::chain::call_order_update_operation, (fee)(funding_account)
 
 FC_REFLECT( graphene::chain::transfer_operation,
             (fee)(from)(to)(amount)(memo) )
+FC_REFLECT( graphene::chain::override_transfer_operation,
+            (fee)(issuer)(from)(to)(amount)(memo) )
 
 FC_REFLECT( graphene::chain::asset_create_operation,
             (fee)
@@ -1611,8 +1635,8 @@ FC_REFLECT( graphene::chain::asset_settle_operation, (fee)(account)(amount) )
 FC_REFLECT( graphene::chain::asset_global_settle_operation, (fee)(issuer)(asset_to_settle)(settle_price) )
 FC_REFLECT( graphene::chain::asset_issue_operation,
             (fee)(issuer)(asset_to_issue)(issue_to_account)(memo) )
-FC_REFLECT( graphene::chain::asset_burn_operation,
-            (fee)(payer)(amount_to_burn) )
+FC_REFLECT( graphene::chain::asset_reserve_operation,
+            (fee)(payer)(amount_to_reserve) )
 
 FC_REFLECT( graphene::chain::proposal_create_operation, (fee)(fee_paying_account)(expiration_time)
             (proposed_ops)(review_period_seconds) )
@@ -1643,11 +1667,12 @@ FC_REFLECT( graphene::chain::custom_operation, (fee)(payer)(required_auths)(id)(
 FC_REFLECT( graphene::chain::assert_operation, (fee)(fee_paying_account)(predicates)(required_auths) )
 
 FC_REFLECT( graphene::chain::void_result, )
-FC_REFLECT( graphene::chain::balance_claim_operation, (fee)(deposit_to_account)(owners)(total_claimed) )
+FC_REFLECT( graphene::chain::balance_claim_operation,
+            (fee)(deposit_to_account)(balance_to_claim)(balance_owner_key)(total_claimed) )
 
 FC_REFLECT_TYPENAME( graphene::chain::operation )
 FC_REFLECT_TYPENAME( graphene::chain::operation_result )
 FC_REFLECT_TYPENAME( fc::flat_set<graphene::chain::vote_id_type> )
-FC_REFLECT(graphene::chain::linear_vesting_policy_initializer, (start_claim)(begin_date)(vesting_seconds) )
+FC_REFLECT(graphene::chain::linear_vesting_policy_initializer, (begin_timestamp)(vesting_cliff_seconds)(vesting_duration_seconds) )
 FC_REFLECT(graphene::chain::cdd_vesting_policy_initializer, (start_claim)(vesting_seconds) )
 FC_REFLECT_TYPENAME( graphene::chain::vesting_policy_initializer )

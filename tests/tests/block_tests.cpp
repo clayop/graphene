@@ -23,7 +23,6 @@
 
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/delegate_object.hpp>
-#include <graphene/chain/key_object.hpp>
 #include <graphene/chain/limit_order_object.hpp>
 #include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/call_order_object.hpp>
@@ -45,9 +44,12 @@ genesis_state_type make_genesis() {
    for( int i = 0; i < 10; ++i )
    {
       auto name = "init"+fc::to_string(i);
-      genesis_state.allocation_targets.emplace_back(name, delegate_priv_key.get_public_key(), 0, true);
-      genesis_state.initial_committee.push_back({name});
-      genesis_state.initial_witnesses.push_back({name, delegate_priv_key.get_public_key(), secret});
+      genesis_state.initial_accounts.emplace_back(name,
+                                                  delegate_priv_key.get_public_key(),
+                                                  delegate_priv_key.get_public_key(),
+                                                  true);
+      genesis_state.initial_committee_candidates.push_back({name});
+      genesis_state.initial_witness_candidates.push_back({name, delegate_priv_key.get_public_key(), secret});
    }
    fc::reflector<fee_schedule_type>::visit(fee_schedule_type::fee_set_visitor{genesis_state.initial_parameters.current_fees, 0});
    return genesis_state;
@@ -277,6 +279,7 @@ BOOST_AUTO_TEST_CASE( undo_pending )
          db.open(data_dir.path(), make_genesis());
 
          auto delegate_priv_key = fc::ecc::private_key::regenerate(fc::sha256::hash(string("null_key")) );
+         public_key_type delegate_pub_key  = delegate_priv_key.get_public_key();
          const graphene::db::index& account_idx = db.get_index(protocol_ids, account_object_type);
 
          {
@@ -295,9 +298,9 @@ BOOST_AUTO_TEST_CASE( undo_pending )
          account_create_operation cop;
          cop.registrar = GRAPHENE_TEMP_ACCOUNT;
          cop.name = "nathan";
-         cop.owner = authority(1, key_id_type(), 1);
+         cop.owner = authority(1, delegate_pub_key, 1);
          trx.operations.push_back(cop);
-         trx.sign( key_id_type(), delegate_priv_key );
+         //trx.sign( delegate_priv_key );
          PUSH_TX( db, trx );
 
          now += db.block_interval();
@@ -336,6 +339,7 @@ BOOST_AUTO_TEST_CASE( switch_forks_undo_create )
 
       fc::time_point_sec now( GRAPHENE_GENESIS_TIMESTAMP );
       auto delegate_priv_key  = fc::ecc::private_key::regenerate(fc::sha256::hash(string("null_key")) );
+      public_key_type delegate_pub_key  = delegate_priv_key.get_public_key();
       const graphene::db::index& account_idx = db1.get_index(protocol_ids, account_object_type);
 
       signed_transaction trx;
@@ -344,9 +348,8 @@ BOOST_AUTO_TEST_CASE( switch_forks_undo_create )
       account_create_operation cop;
       cop.registrar = GRAPHENE_TEMP_ACCOUNT;
       cop.name = "nathan";
-      cop.owner = authority(1, key_id_type(), 1);
+      cop.owner = authority(1, delegate_pub_key, 1);
       trx.operations.push_back(cop);
-      trx.sign( key_id_type(), delegate_priv_key );
       PUSH_TX( db1, trx );
 
       auto aw = db1.get_global_properties().active_witnesses;
@@ -395,6 +398,7 @@ BOOST_AUTO_TEST_CASE( duplicate_transactions )
       auto skip_sigs = database::skip_transaction_signatures | database::skip_authority_check;
 
       auto delegate_priv_key  = fc::ecc::private_key::regenerate(fc::sha256::hash(string("null_key")) );
+      public_key_type delegate_pub_key  = delegate_priv_key.get_public_key();
       const graphene::db::index& account_idx = db1.get_index(protocol_ids, account_object_type);
 
       signed_transaction trx;
@@ -402,15 +406,15 @@ BOOST_AUTO_TEST_CASE( duplicate_transactions )
       account_id_type nathan_id = account_idx.get_next_id();
       account_create_operation cop;
       cop.name = "nathan";
-      cop.owner = authority(1, key_id_type(), 1);
+      cop.owner = authority(1, delegate_pub_key, 1);
       trx.operations.push_back(cop);
-      trx.sign( key_id_type(), delegate_priv_key );
+      trx.sign( delegate_priv_key );
       PUSH_TX( db1, trx, skip_sigs );
 
       trx = decltype(trx)();
       trx.set_expiration(db1.head_block_time() + fc::minutes(1));
       trx.operations.push_back(transfer_operation({asset(), account_id_type(), nathan_id, asset(500)}));
-      trx.sign( key_id_type(), delegate_priv_key );
+      trx.sign(  delegate_priv_key );
       PUSH_TX( db1, trx, skip_sigs );
 
       BOOST_CHECK_THROW(PUSH_TX( db1, trx, skip_sigs ), fc::exception);
@@ -443,6 +447,7 @@ BOOST_AUTO_TEST_CASE( tapos )
       const account_object& init1 = *db1.get_index_type<account_index>().indices().get<by_name>().find("init1");
 
       auto delegate_priv_key  = fc::ecc::private_key::regenerate(fc::sha256::hash(string("null_key")) );
+      public_key_type delegate_pub_key  = delegate_priv_key.get_public_key();
       const graphene::db::index& account_idx = db1.get_index(protocol_ids, account_object_type);
 
       now += db1.block_interval();
@@ -456,9 +461,9 @@ BOOST_AUTO_TEST_CASE( tapos )
       account_create_operation cop;
       cop.registrar = init1.id;
       cop.name = "nathan";
-      cop.owner = authority(1, key_id_type(), 1);
+      cop.owner = authority(1, delegate_pub_key, 1);
       trx.operations.push_back(cop);
-      trx.sign(key_id_type(2), delegate_priv_key);
+      trx.sign(delegate_priv_key);
       db1.push_transaction(trx);
       now += db1.block_interval();
       b = db1.generate_block(now, db1.get_scheduled_witness(1).first, delegate_priv_key, database::skip_nothing);
@@ -469,12 +474,12 @@ BOOST_AUTO_TEST_CASE( tapos )
       trx.clear();
 
       trx.operations.push_back(transfer_operation({asset(), account_id_type(), nathan_id, asset(50)}));
-      trx.sign(key_id_type(2), delegate_priv_key);
+      trx.sign(delegate_priv_key);
       //relative_expiration is 1, but ref block is 2 blocks old, so this should fail.
       BOOST_REQUIRE_THROW(PUSH_TX( db1, trx, database::skip_transaction_signatures | database::skip_authority_check ), fc::exception);
       trx.set_expiration(db1.head_block_id(), 2);
       trx.signatures.clear();
-      trx.sign(key_id_type(2), delegate_priv_key);
+      trx.sign(delegate_priv_key);
       db1.push_transaction(trx, database::skip_transaction_signatures | database::skip_authority_check);
    } catch (fc::exception& e) {
       edump((e.to_detail_string()));
@@ -576,6 +581,45 @@ BOOST_FIXTURE_TEST_CASE( limit_order_expiration, database_fixture )
    BOOST_CHECK_EQUAL( get_balance(*nathan, *core), 50000 );
 } FC_LOG_AND_RETHROW() }
 
+BOOST_FIXTURE_TEST_CASE( double_sign_check, database_fixture )
+{ try {
+   generate_block();
+   const auto& from = account_id_type()(db);
+   ACTOR(to);
+   asset amount(1000);
+
+   trx.set_expiration(db.head_block_time() + fc::minutes(1));
+   trx.operations.push_back(transfer_operation({ asset(), from.id, to.id, amount, memo_data() }));
+   for( auto& op : trx.operations ) op.visit(operation_set_fee(db.current_fee_schedule()));
+   trx.validate();
+
+   db.push_transaction(trx, ~0);
+
+   trx.operations.clear();
+   trx.operations.push_back(transfer_operation({ asset(), to.id, from.id, amount, memo_data() }));
+   for( auto& op : trx.operations ) op.visit(operation_set_fee(db.current_fee_schedule()));
+   trx.validate();
+
+   BOOST_TEST_MESSAGE( "Verify that not-signing causes an exception" );
+   BOOST_REQUIRE_THROW( db.push_transaction(trx, 0), fc::exception );
+
+   BOOST_TEST_MESSAGE( "Verify that double-signing causes an exception" );
+   trx.sign(to_private_key);
+   trx.sign(to_private_key);
+   BOOST_REQUIRE_THROW( db.push_transaction(trx, 0), fc::exception );
+
+   BOOST_TEST_MESSAGE( "Verify that signing with an extra, unused key fails" );
+   trx.signatures.pop_back();
+   trx.sign(generate_private_key("bogus"));
+   BOOST_REQUIRE_THROW( db.push_transaction(trx, 0), fc::exception );
+
+   BOOST_TEST_MESSAGE( "Verify that signing once with the proper key passes" );
+   trx.signatures.pop_back();
+   db.push_transaction(trx, 0);
+   trx.sign(to_private_key);
+
+} FC_LOG_AND_RETHROW() }
+
 BOOST_FIXTURE_TEST_CASE( change_block_interval, database_fixture )
 { try {
    generate_block();
@@ -602,7 +646,8 @@ BOOST_FIXTURE_TEST_CASE( change_block_interval, database_fixture )
                                      get_account("init4").get_id(), get_account("init5").get_id(),
                                      get_account("init6").get_id(), get_account("init7").get_id()};
       trx.operations.push_back(uop);
-      trx.sign(get_account("init0").active.get_keys().front(),delegate_priv_key);
+      trx.sign(delegate_priv_key);
+      /*
       trx.sign(get_account("init1").active.get_keys().front(),delegate_priv_key);
       trx.sign(get_account("init2").active.get_keys().front(),delegate_priv_key);
       trx.sign(get_account("init3").active.get_keys().front(),delegate_priv_key);
@@ -610,8 +655,9 @@ BOOST_FIXTURE_TEST_CASE( change_block_interval, database_fixture )
       trx.sign(get_account("init5").active.get_keys().front(),delegate_priv_key);
       trx.sign(get_account("init6").active.get_keys().front(),delegate_priv_key);
       trx.sign(get_account("init7").active.get_keys().front(),delegate_priv_key);
+      */
       db.push_transaction(trx);
-      BOOST_CHECK(proposal_id_type()(db).is_authorized_to_execute(&db));
+      BOOST_CHECK(proposal_id_type()(db).is_authorized_to_execute(db));
    }
 
    BOOST_CHECK_EQUAL(db.get_global_properties().parameters.block_interval, 5);
@@ -861,5 +907,51 @@ BOOST_FIXTURE_TEST_CASE( account_create_fee_scaling, database_fixture )
    generate_blocks(db.get_dynamic_global_properties().next_maintenance_time);
    BOOST_CHECK_EQUAL(db.get_global_properties().parameters.current_fees.account_create_fee, 1);
 } FC_LOG_AND_RETHROW() }
+
+BOOST_FIXTURE_TEST_CASE( tapos_rollover, database_fixture )
+{
+   try
+   {
+      ACTORS((alice)(bob));
+      const auto& core   = asset_id_type()(db);
+
+      BOOST_TEST_MESSAGE( "Give Alice some money" );
+      transfer(genesis_account, alice_id, asset(10000));
+      generate_block();
+
+      BOOST_TEST_MESSAGE( "Generate up to block 0xFF00" );
+      generate_blocks( 0xFF00 );
+      signed_transaction xfer_tx;
+
+      BOOST_TEST_MESSAGE( "Transfer money at/about 0xFF00" );
+      transfer_operation xfer_op;
+      xfer_op.from = alice_id;
+      xfer_op.to = bob_id;
+      xfer_op.amount = asset(1000);
+
+      xfer_tx.operations.push_back( xfer_op );
+      xfer_tx.set_expiration( db.head_block_id(), 0x1000 );
+      sign( xfer_tx, alice_private_key );
+      PUSH_TX( db, xfer_tx, 0 );
+      generate_block();
+
+      BOOST_TEST_MESSAGE( "Sign new tx's" );
+      xfer_tx.set_expiration( db.head_block_id(), 0x1000 );
+      xfer_tx.signatures.clear();
+      sign( xfer_tx, alice_private_key );
+
+      BOOST_TEST_MESSAGE( "Generate up to block 0x10010" );
+      generate_blocks( 0x110 );
+
+      BOOST_TEST_MESSAGE( "Transfer at/about block 0x10010 using reference block at/about 0xFF00" );
+      PUSH_TX( db, xfer_tx, 0 );
+      generate_block();
+   }
+   catch (fc::exception& e)
+   {
+      edump((e.to_detail_string()));
+      throw;
+   }
+}
 
 BOOST_AUTO_TEST_SUITE_END()

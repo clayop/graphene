@@ -1,91 +1,31 @@
-/*
- * Copyright (c) 2015, Cryptonomex, Inc.
- * All rights reserved.
- *
- * This source code is provided for evaluation in private test networks only, until September 8, 2015. After this date, this license expires and
- * the code may not be used, modified or distributed for any purpose. Redistribution and use in source and binary forms, with or without modification,
- * are permitted until September 8, 2015, provided that the following conditions are met:
- *
- * 1. The code and/or derivative works are used only for private test networks consisting of no more than 10 P2P nodes.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-#include <graphene/chain/operations.hpp>
-#include <graphene/chain/vesting_balance_object.hpp>
-#include <graphene/chain/withdraw_permission_object.hpp>
-#include <graphene/chain/proposal_object.hpp>
-#include <graphene/chain/witness_object.hpp>
-#include <graphene/chain/call_order_object.hpp>
-#include <graphene/chain/limit_order_object.hpp>
-#include <graphene/chain/account_object.hpp>
-#include <graphene/chain/balance_object.hpp>
-#include <graphene/chain/block.hpp>
-#include <iostream>
+#include <fc/reflect/variant.hpp>
+#include <fc/crypto/ripemd160.hpp>
+#include <fc/crypto/sha224.hpp>
+#include <sstream>
+#include <set>
 
-using namespace graphene::chain;
+namespace graphene { namespace db {
+using std::set;
+using std::map;
+using fc::time_point_sec;
+using fc::time_point;
+using std::string;
 
-namespace detail_ns {
-
-string remove_tail_if( const string& str, char c, const string& match )
-{
-   auto last = str.find_last_of( c );
-   if( last != std::string::npos )
-      if( str.substr( last + 1 ) == match )
-         return str.substr( 0, last );
-   return str;
-}
-string remove_namespace_if( const string& str, const string& match )
-{
-   auto last = str.find( match );
-   if( last != std::string::npos )
-      return str.substr( match.size()+2 );
-   return str;
-}
-
-
-string remove_namespace( string str )
-{
-   str = remove_tail_if( str, '_', "operation" );
-   str = remove_tail_if( str, '_', "t" );
-   str = remove_tail_if( str, '_', "object" );
-   str = remove_tail_if( str, '_', "type" );
-   str = remove_namespace_if( str, "graphene::chain" );
-   str = remove_namespace_if( str, "graphene::db" );
-   str = remove_namespace_if( str, "std" );
-   str = remove_namespace_if( str, "fc" );
-   auto pos = str.find( ":" );
-   if( pos != str.npos )
-      str.replace( pos, 2, "_" );
-   return str;
-}
-
-
-
+std::set<std::string>& processed_types();
+std::stringstream& current_stream( std::unique_ptr<std::stringstream>&& s = std::unique_ptr<std::stringstream>() );
+string remove_tail_if( const string& str, char c, const string& match );
+string remove_namespace_if( const string& str, const string& match );
+string remove_namespace( string str );
 
 template<typename T>
 void generate_serializer();
 template<typename T>
 void register_serializer();
 
+extern map<string, size_t >                st;
+extern vector<std::function<void()>>       serializers;
 
-map<string, size_t >                st;
-vector<std::function<void()>>       serializers;
-
-bool register_serializer( const string& name, std::function<void()> sr )
-{
-   if( st.find(name) == st.end() )
-   {
-      serializers.push_back( sr );
-      st[name] = serializers.size() - 1;
-      return true;
-   }
-   return false;
-}
+bool register_serializer( const string& name, std::function<void()> sr );
 
 template<typename T> struct js_name { static std::string name(){ return  remove_namespace(fc::get_typename<T>::name()); }; };
 
@@ -104,12 +44,11 @@ template<typename T> struct js_name< fc::safe<T> > { static std::string name(){ 
 
 
 template<> struct js_name< std::vector<char> > { static std::string name(){ return "bytes()";     } };
-template<> struct js_name< op_wrapper >        { static std::string name(){ return "operation "; } };
+//template<> struct js_name< op_wrapper >        { static std::string name(){ return "operation "; } };
 template<> struct js_name<fc::uint160>         { static std::string name(){ return "bytes 20";   } };
 template<> struct js_name<fc::sha224>          { static std::string name(){ return "bytes 28";   } };
 template<> struct js_name<fc::unsigned_int>    { static std::string name(){ return "varuint32";  } };
 template<> struct js_name<fc::signed_int>      { static std::string name(){ return "varint32";   } };
-template<> struct js_name< vote_id_type >      { static std::string name(){ return "vote_id";    } };
 template<> struct js_name< time_point_sec >    { static std::string name(){ return "time_point_sec"; } };
 
 template<uint8_t S, uint8_t T, typename O>
@@ -169,13 +108,14 @@ struct serialize_type_visitor
 {
    typedef void result_type;
 
+   fc::mutable_variant_object& obj;
    int t = 0;
-   serialize_type_visitor(int _t ):t(_t){}
+   serialize_type_visitor( fc::mutable_variant_object& o, int _t ):obj(o),t(_t){}
 
    template<typename Type>
    result_type operator()( const Type& op )const
    {
-      std::cout << "    " <<remove_namespace( fc::get_typename<Type>::name() )  <<": "<<t<<"\n";
+      obj(remove_namespace( fc::get_typename<Type>::name()),t);
    }
 };
 
@@ -186,7 +126,7 @@ class serialize_member_visitor
       template<typename Member, class Class, Member (Class::*member)>
       void operator()( const char* name )const
       {
-         std::cout << "    " << name <<": " << js_name<Member>::name() <<"\n";
+         current_stream() << "    " << name << " : " <<  fc::get_typename<Member>::name() <<"\n";
       }
 };
 
@@ -213,12 +153,14 @@ struct serializer<std::vector<T>,false>
    static void init() { serializer<T>::init(); }
    static void generate() {}
 };
+/*
 template<>
 struct serializer<std::vector<operation>,false>
 {
    static void init() { }
    static void generate() {}
 };
+*/
 
 template<>
 struct serializer<object_id_type,true>
@@ -233,7 +175,6 @@ struct serializer<uint64_t,false>
    static void init() {}
    static void generate() {}
 };
-template<> struct serializer<vote_id_type,false> { static void init() {} static void generate() {} };
 #ifdef __APPLE__
 // on mac, size_t is a distinct type from uint64_t or uint32_t and needs a separate specialization
 template<> struct serializer<size_t,false> { static void init() {} static void generate() {} };
@@ -260,10 +201,10 @@ struct serializer< fc::static_variant<T...>, false >
 {
    static void init()
    {
-      static bool init = false;
-      if( !init )
+      auto name = js_name<fc::static_variant<T...>>::name();
+      if( processed_types().find( name ) == processed_types().end()  )
       {
-         init = true;
+         processed_types().insert( name );
          fc::static_variant<T...> var;
          for( int i = 0; i < var.count(); ++i )
          {
@@ -276,7 +217,7 @@ struct serializer< fc::static_variant<T...>, false >
 
    static void generate()
    {
-      std::cout <<  js_name<fc::static_variant<T...>>::name() << " = static_variant [" + js_sv_name<T...>::name() + "\n]\n\n";
+      current_stream() <<  js_name<fc::static_variant<T...>>::name() << " = static_variant [" + js_sv_name<T...>::name() + "\n]\n\n";
    }
 };
 
@@ -308,46 +249,35 @@ struct serializer
    {
       auto name = remove_namespace( js_name<T>::name() );
       if( name == "int64" ) return;
-      std::cout << "" << name
+      current_stream() << "" << name
                 << " = new Serializer( \n"
                 << "    \"" + name + "\"\n";
 
       fc::reflector<T>::visit( serialize_member_visitor() );
 
-      std::cout <<")\n\n";
+      current_stream() <<")\n\n";
    }
 };
 
-} // namespace detail_ns
 
-int main( int argc, char** argv )
+template<typename T>
+std::string get_type_description()
 {
-   try {
-    operation op;
-
-    std::cout << "ChainTypes.operations=\n";
-    for( uint32_t i = 0; i < op.count(); ++i )
-    {
-       op.set_which(i);
-       op.visit( detail_ns::serialize_type_visitor(i) );
-    }
-    std::cout << "\n";
-
-    detail_ns::js_name<operation>::name("operation");
-    detail_ns::js_name<static_variant<address,public_key_type>>::name("key_data");
-    detail_ns::js_name<operation_result>::name("operation_result");
-    detail_ns::js_name<header_extension>::name("header_extension");
-    detail_ns::js_name<static_variant<refund_worker_type::initializer, vesting_balance_worker_type::initializer,burn_worker_type::initializer>>::name("worker_initializer");
-    detail_ns::js_name<static_variant<linear_vesting_policy_initializer,cdd_vesting_policy_initializer>>::name("vesting_policy_initializer");
-    detail_ns::serializer<signed_block>::init();
-    detail_ns::serializer<block_header>::init();
-    detail_ns::serializer<signed_block_header>::init();
-    detail_ns::serializer<operation>::init();
-    detail_ns::serializer<transaction>::init();
-    detail_ns::serializer<signed_transaction>::init();
-    for( const auto& gen : detail_ns::serializers )
-       gen();
-
-  } catch ( const fc::exception& e ){ edump((e.to_detail_string())); }
-   return 0;
+   current_stream( std::unique_ptr<std::stringstream>(new std::stringstream()) );
+   processed_types().clear();
+   serializer<T>::init();
+   for( const auto& gen : serializers )
+      gen();
+   return current_stream().str();
 }
+
+
+} } // graphene::db
+
+
+
+
+
+
+
+

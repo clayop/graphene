@@ -45,8 +45,8 @@ object* create_object( const variant& v );
 
 struct plain_keys
 {
-   map<key_id_type, string>  keys;
-   fc::sha512                checksum;
+   map<public_key_type, string>  keys;
+   fc::sha512                    checksum;
 };
 
 struct wallet_data
@@ -80,9 +80,13 @@ struct wallet_data
    /** encrypted keys */
    vector<char>              cipher_keys;
 
+   /** map an account to a set of extra keys that have been imported for that account */
+   map<account_id_type, set<public_key_type> >  extra_keys;
+
    // map of account_name -> base58_private_key for
    //    incomplete account regs
-   map<string, string> pending_account_registrations;
+   map<string, vector<string> > pending_account_registrations;
+   map<string, string> pending_witness_registrations;
 
    string                    ws_server = "ws://localhost:8090";
    string                    ws_user;
@@ -254,7 +258,7 @@ class wallet_api
        * @ingroup Transaction Builder API
        */
       void replace_operation_in_builder_transaction(transaction_handle_type handle,
-                                                    int operation_index,
+                                                    unsigned operation_index,
                                                     const operation& new_op);
       /**
        * @ingroup Transaction Builder API
@@ -321,9 +325,9 @@ class wallet_api
        *
        * The keys are printed in WIF format.  You can import these keys into another wallet
        * using \c import_key()
-       * @returns a map containing the private keys, indexed by their key_id
+       * @returns a map containing the private keys, indexed by their public key 
        */
-      map<key_id_type, string> dump_private_keys();
+      map<public_key_type, string> dump_private_keys();
 
       /** Returns a list of all commands supported by the wallet API.
        *
@@ -408,6 +412,12 @@ class wallet_api
        * @returns true if the key was imported
        */
       bool import_key(string account_name_or_id, string wif_key);
+
+      /**
+       * This call will construct a transaction that will claim all balances controled
+       * by wif_keys and deposit them into the given account.
+       */
+      signed_transaction import_balance( string account_name_or_id, const vector<string>& wif_keys, bool broadcast );
 
       /** Transforms a brain key to reduce the chance of errors when re-entering the key from memory.
        *
@@ -720,7 +730,7 @@ class wallet_api
        * @param broadcast true to broadcast the transaction on the network
        * @returns the signed transaction burning the asset
        */
-      signed_transaction burn_asset(string from,
+      signed_transaction reserve_asset(string from,
                                     string amount,
                                     string symbol,
                                     bool broadcast = false);
@@ -796,21 +806,69 @@ class wallet_api
        * An account can have at most one delegate object.
        *
        * @param owner_account the name or id of the account which is creating the delegate
+       * @param url a URL to include in the delegate record in the blockchain.  Clients may
+       *            display this when showing a list of delegates.  May be blank.
        * @param broadcast true to broadcast the transaction on the network
        * @returns the signed transaction registering a delegate
        */
       signed_transaction create_delegate(string owner_account,
+                                         string url, 
                                          bool broadcast = false);
+
+      /** Lists all witnesses registered in the blockchain.
+       * This returns a list of all account names that own witnesses, and the associated witness id,
+       * sorted by name.  This lists witnesses whether they are currently voted in or not.
+       *
+       * Use the \c lowerbound and limit parameters to page through the list.  To retrieve all witnesss,
+       * start by setting \c lowerbound to the empty string \c "", and then each iteration, pass
+       * the last witness name returned as the \c lowerbound for the next \c list_witnesss() call.
+       *
+       * @param lowerbound the name of the first witness to return.  If the named witness does not exist, 
+       *                   the list will start at the witness that comes after \c lowerbound
+       * @param limit the maximum number of witnesss to return (max: 1000)
+       * @returns a list of witnesss mapping witness names to witness ids
+       */
+      map<string,witness_id_type>       list_witnesses(const string& lowerbound, uint32_t limit);
+
+      /** Lists all delegates registered in the blockchain.
+       * This returns a list of all account names that own delegates, and the associated delegate id,
+       * sorted by name.  This lists delegates whether they are currently voted in or not.
+       *
+       * Use the \c lowerbound and limit parameters to page through the list.  To retrieve all delegates,
+       * start by setting \c lowerbound to the empty string \c "", and then each iteration, pass
+       * the last delegate name returned as the \c lowerbound for the next \c list_delegates() call.
+       *
+       * @param lowerbound the name of the first delegate to return.  If the named delegate does not exist, 
+       *                   the list will start at the delegate that comes after \c lowerbound
+       * @param limit the maximum number of delegates to return (max: 1000)
+       * @returns a list of delegates mapping delegate names to delegate ids
+       */
+      map<string, delegate_id_type>       list_delegates(const string& lowerbound, uint32_t limit);
+
+      /** Returns information about the given witness.
+       * @param owner_account the name or id of the witness account owner, or the id of the witness
+       * @returns the information about the witness stored in the block chain
+       */
+      witness_object get_witness(string owner_account);
+
+      /** Returns information about the given delegate.
+       * @param owner_account the name or id of the delegate account owner, or the id of the delegate
+       * @returns the information about the delegate stored in the block chain
+       */
+      delegate_object get_delegate(string owner_account);
 
       /** Creates a witness object owned by the given account.
        *
        * An account can have at most one witness object.
        *
        * @param owner_account the name or id of the account which is creating the witness
+       * @param url a URL to include in the witness record in the blockchain.  Clients may
+       *            display this when showing a list of witnesses.  May be blank.
        * @param broadcast true to broadcast the transaction on the network
        * @returns the signed transaction registering a witness
        */
       signed_transaction create_witness(string owner_account,
+                                        string url,
                                         bool broadcast = false);
 
       /** Vote for a given delegate.
@@ -908,7 +966,8 @@ FC_REFLECT( graphene::wallet::plain_keys, (keys)(checksum) )
 FC_REFLECT( graphene::wallet::wallet_data,
             (my_accounts)
             (cipher_keys)
-            (pending_account_registrations)
+            (extra_keys)
+            (pending_account_registrations)(pending_witness_registrations)
             (ws_server)
             (ws_user)
             (ws_password)
@@ -935,6 +994,7 @@ FC_API( graphene::wallet::wallet_api,
         (list_account_balances)
         (list_assets)
         (import_key)
+        (import_balance)
         (suggest_brain_key)
         (register_account)
         (upgrade_account)
@@ -951,11 +1011,15 @@ FC_API( graphene::wallet::wallet_api,
         (get_asset)
         (get_bitasset_data)
         (fund_asset_fee_pool)
-        (burn_asset)
+        (reserve_asset)
         (global_settle_asset)
         (settle_asset)
         (whitelist_account)
         (create_delegate)
+        (get_witness)
+        (get_delegate)
+        (list_witnesses)
+        (list_delegates)
         (create_witness)
         (vote_for_delegate)
         (vote_for_witness)

@@ -70,8 +70,14 @@ void database::pay_workers( share_type& budget )
          active_workers.emplace_back(w);
    });
 
+   // worker with more votes is preferred
+   // if two workers exactly tie for votes, worker with lower ID is preferred
    std::sort(active_workers.begin(), active_workers.end(), [this](const worker_object& wa, const worker_object& wb) {
-      return wa.approving_stake(_vote_tally_buffer) > wb.approving_stake(_vote_tally_buffer);
+      share_type wa_vote = wa.approving_stake(_vote_tally_buffer);
+      share_type wb_vote = wb.approving_stake(_vote_tally_buffer);
+      if( wa_vote != wb_vote )
+         return wa_vote > wb_vote;
+      return wa.id < wb.id;
    });
 
    for( int i = 0; i < active_workers.size() && budget > 0; ++i )
@@ -101,12 +107,12 @@ void database::update_active_witnesses()
    assert( _witness_count_histogram_buffer.size() > 0 );
    share_type stake_target = _total_voting_stake / 2;
    share_type stake_tally = _witness_count_histogram_buffer[0];
-   int witness_count = 0;
-   while( (size_t(witness_count) < _witness_count_histogram_buffer.size())
+   size_t witness_count = 0;
+   while( (witness_count < _witness_count_histogram_buffer.size() - 1)
           && (stake_tally <= stake_target) )
       stake_tally += _witness_count_histogram_buffer[++witness_count];
 
-   auto wits = sort_votable_objects<witness_index>(std::max(witness_count*2+1, GRAPHENE_MIN_WITNESS_COUNT));
+   auto wits = sort_votable_objects<witness_index>(std::max(witness_count*2+1, (size_t)GRAPHENE_MIN_WITNESS_COUNT));
    const global_property_object& gpo = get_global_properties();
 
    // Update witness authority
@@ -114,7 +120,7 @@ void database::update_active_witnesses()
       uint64_t total_votes = 0;
       map<account_id_type, uint64_t> weights;
       a.active.weight_threshold = 0;
-      a.active.auths.clear();
+      a.active.clear();
 
       for( const witness_object& wit : wits )
       {
@@ -129,7 +135,7 @@ void database::update_active_witnesses()
       {
          // Ensure that everyone has at least one vote. Zero weights aren't allowed.
          uint16_t votes = std::max((weight.second >> bits_to_drop), uint64_t(1) );
-         a.active.auths[weight.first] += votes;
+         a.active.account_auths[weight.first] += votes;
          a.active.weight_threshold += votes;
       }
 
@@ -167,12 +173,12 @@ void database::update_active_delegates()
    assert( _committee_count_histogram_buffer.size() > 0 );
    uint64_t stake_target = _total_voting_stake / 2;
    uint64_t stake_tally = _committee_count_histogram_buffer[0];
-   int delegate_count = 0;
-   while( (size_t(delegate_count) < _committee_count_histogram_buffer.size())
+   size_t delegate_count = 0;
+   while( (delegate_count < _committee_count_histogram_buffer.size() - 1)
           && (stake_tally <= stake_target) )
       stake_tally += _committee_count_histogram_buffer[++delegate_count];
 
-   auto delegates = sort_votable_objects<delegate_index>(std::max(delegate_count*2+1, GRAPHENE_MIN_DELEGATE_COUNT));
+   auto delegates = sort_votable_objects<delegate_index>(std::max(delegate_count*2+1, (size_t)GRAPHENE_MIN_DELEGATE_COUNT));
 
    // Update genesis authorities
    if( !delegates.empty() )
@@ -181,7 +187,7 @@ void database::update_active_delegates()
          uint64_t total_votes = 0;
          map<account_id_type, uint64_t> weights;
          a.active.weight_threshold = 0;
-         a.active.auths.clear();
+         a.active.clear();
 
          for( const delegate_object& del : delegates )
          {
@@ -196,7 +202,7 @@ void database::update_active_delegates()
          {
             // Ensure that everyone has at least one vote. Zero weights aren't allowed.
             uint16_t votes = std::max((weight.second >> bits_to_drop), uint64_t(1) );
-            a.active.auths[weight.first] += votes;
+            a.active.account_auths[weight.first] += votes;
             a.active.weight_threshold += votes;
          }
 
@@ -227,13 +233,13 @@ share_type database::get_max_budget( fc::time_point_sec now )const
 
    int64_t dt = (now - dpo.last_budget_time).to_seconds();
 
-   // We'll consider accumulated_fees to be burned at the BEGINNING
+   // We'll consider accumulated_fees to be reserved at the BEGINNING
    // of the maintenance interval.  However, for speed we only
    // call modify() on the asset_dynamic_data_object once at the
    // end of the maintenance interval.  Thus the accumulated_fees
    // are available for the budget at this point, but not included
-   // in core.burned().
-   share_type reserve = core.burned(*this) + core_dd.accumulated_fees;
+   // in core.reserved().
+   share_type reserve = core.reserved(*this) + core_dd.accumulated_fees;
    // Similarly, we consider leftover witness_budget to be burned
    // at the BEGINNING of the maintenance interval.
    reserve += dpo.witness_budget;

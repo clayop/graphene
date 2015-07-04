@@ -139,11 +139,11 @@ void_result asset_issue_evaluator::do_apply( const asset_issue_operation& o )
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result asset_burn_evaluator::do_evaluate( const asset_burn_operation& o )
+void_result asset_reserve_evaluator::do_evaluate( const asset_reserve_operation& o )
 { try {
    database& d   = db();
 
-   const asset_object& a = o.amount_to_burn.asset_id(d);
+   const asset_object& a = o.amount_to_reserve.asset_id(d);
    FC_ASSERT( !a.is_market_issued() );
 
    from_account = &o.payer(d);
@@ -154,17 +154,17 @@ void_result asset_burn_evaluator::do_evaluate( const asset_burn_operation& o )
    }
 
    asset_dyn_data = &a.dynamic_asset_data_id(d);
-   FC_ASSERT( (asset_dyn_data->current_supply - o.amount_to_burn.amount) >= 0 );
+   FC_ASSERT( (asset_dyn_data->current_supply - o.amount_to_reserve.amount) >= 0 );
 
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result asset_burn_evaluator::do_apply( const asset_burn_operation& o )
+void_result asset_reserve_evaluator::do_apply( const asset_reserve_operation& o )
 { try {
-   db().adjust_balance( o.payer, -o.amount_to_burn );
+   db().adjust_balance( o.payer, -o.amount_to_reserve );
 
    db().modify( *asset_dyn_data, [&]( asset_dynamic_data_object& data ){
-        data.current_supply -= o.amount_to_burn.amount;
+        data.current_supply -= o.amount_to_reserve.amount;
    });
 
    return void_result();
@@ -299,8 +299,16 @@ void_result asset_update_bitasset_evaluator::do_evaluate(const asset_update_bita
 
 void_result asset_update_bitasset_evaluator::do_apply(const asset_update_bitasset_operation& o)
 { try {
-   db().modify(*bitasset_to_update, [&o](asset_bitasset_data_object& b) {
+   bool should_update_feeds = false;
+   // If the minimum number of feeds to calculate a median has changed, we need to recalculate the median
+   if( o.new_options.minimum_feeds != bitasset_to_update->options.minimum_feeds )
+      should_update_feeds = true;
+
+   db().modify(*bitasset_to_update, [&](asset_bitasset_data_object& b) {
       b.options = o.new_options;
+
+      if( should_update_feeds )
+         b.update_median_feeds(db().head_block_time());
    });
 
    return void_result();
@@ -441,8 +449,7 @@ void_result asset_publish_feeds_evaluator::do_evaluate(const asset_publish_feed_
    if( base.issuer == account_id_type() )
    {
       //It's a delegate-fed asset. Verify that publisher is an active delegate or witness.
-      // TODO: replace account_id_type with global variable for delegates account id
-      FC_ASSERT(d.get(account_id_type()).active.auths.count(o.publisher) ||
+      FC_ASSERT(d.get(GRAPHENE_COMMITTEE_ACCOUNT).active.account_auths.count(o.publisher) ||
                 d.get_global_properties().witness_accounts.count(o.publisher));
    } else {
       FC_ASSERT(bitasset.feeds.count(o.publisher));
@@ -456,14 +463,17 @@ void_result asset_publish_feeds_evaluator::do_apply(const asset_publish_feed_ope
    database& d = db();
 
    const asset_object& base = o.asset_id(d);
+   const asset_bitasset_data_object& bad = base.bitasset_data(d);
+
+   auto old_feed =  bad.current_feed;
    // Store medians for this asset
-   d.modify(base.bitasset_data(d), [&o,&d](asset_bitasset_data_object& a) {
+   d.modify(bad , [&o,&d](asset_bitasset_data_object& a) {
       a.feeds[o.publisher] = make_pair(d.head_block_time(), o.feed);
       a.update_median_feeds(d.head_block_time());
    });
 
-   /// TODO: optimization: only do this if the median feed actually changed, otherwise there is no point
-   db().check_call_orders(base);
+   if( !(old_feed == bad.current_feed) )
+      db().check_call_orders(base);
 
    return void_result();
 } FC_CAPTURE_AND_RETHROW((o)) }
