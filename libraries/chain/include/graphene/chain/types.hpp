@@ -389,6 +389,7 @@ namespace graphene { namespace chain {
       uint64_t proposal_update_fee = 1500000; ///< fee for adding or removing approval of a proposed transaction
       uint64_t proposal_delete_fee = 0; ///< fee for deleting a proposed transaction
       uint64_t custom_operation_fee = 300000; ///< fee for a custom operation
+      uint64_t blind_data_fee = 10000; ///< fee per killobyte of blinded operation size
 
    protected:
       size_t data_size()const {
@@ -587,6 +588,8 @@ FC_REFLECT( graphene::chain::fee_schedule_type,
             (proposal_create_fee)
             (proposal_update_fee)
             (proposal_delete_fee)
+            (custom_operation_fee)
+            (blind_data_fee)
           )
 
 FC_REFLECT( graphene::chain::chain_parameters,
