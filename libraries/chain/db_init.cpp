@@ -50,6 +50,9 @@
 #include <graphene/chain/worker_evaluator.hpp>
 #include <graphene/chain/balance_evaluator.hpp>
 
+#include <graphene/chain/confidential.hpp>
+#include <graphene/chain/confidential_evaluator.hpp>
+
 #include <fc/uint128.hpp>
 #include <fc/crypto/digest.hpp>
 
@@ -96,6 +99,10 @@ void database::initialize_evaluators()
    register_evaluator<withdraw_permission_delete_evaluator>();
    register_evaluator<worker_create_evaluator>();
    register_evaluator<balance_claim_evaluator>();
+
+   register_evaluator<transfer_to_blind_evaluator>();
+   register_evaluator<transfer_from_blind_evaluator>();
+   register_evaluator<blind_transfer_evaluator>();
 }
 
 void database::initialize_indexes()
@@ -134,6 +141,7 @@ void database::initialize_indexes()
    add_index< primary_index<simple_index<asset_dynamic_data_object       >> >();
    add_index< primary_index<flat_index<  block_summary_object            >> >();
    add_index< primary_index<simple_index<witness_schedule_object         >> >();
+   add_index< primary_index<blinded_balance_index                         > >();
 }
 
 void database::init_genesis(const genesis_state_type& genesis_state)

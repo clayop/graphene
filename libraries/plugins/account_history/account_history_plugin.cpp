@@ -181,6 +181,38 @@ struct operation_get_impacted_accounts
    void operator()( const assert_operation& )const {}
    void operator()( const balance_claim_operation& )const {}
    void operator()( const override_transfer_operation& )const {}
+
+   void operator()( const transfer_to_blind_operation& o )const 
+   {
+      _impacted.insert( o.from );
+      for( const auto& out : o.outputs )
+      {
+         for( const auto& a : out.owner.account_auths )
+            _impacted.insert( a.first );
+      }
+   }
+   void operator()( const transfer_from_blind_operation& o )const 
+   {
+      _impacted.insert( o.to );
+      for( const auto& in : o.inputs )
+      {
+         for( const auto& a : in.owner.account_auths )
+            _impacted.insert( a.first );
+      }
+   }
+   void operator()( const blind_transfer_operation& o )const 
+   {
+      for( const auto& in : o.inputs )
+      {
+         for( const auto& a : in.owner.account_auths )
+            _impacted.insert( a.first );
+      }
+      for( const auto& out : o.outputs )
+      {
+         for( const auto& a : out.owner.account_auths )
+            _impacted.insert( a.first );
+      }
+   }
 };
 
 

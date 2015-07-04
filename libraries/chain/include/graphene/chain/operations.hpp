@@ -33,6 +33,9 @@
 #include <graphene/chain/worker_object.hpp>
 #include <graphene/chain/account_object.hpp>
 
+
+#include <graphene/chain/confidential.hpp>
+
 #include <fc/static_variant.hpp>
 #include <fc/uint128.hpp>
 
@@ -1322,7 +1325,10 @@ namespace graphene { namespace chain {
             custom_operation,
             assert_operation,
             balance_claim_operation,
-            override_transfer_operation
+            override_transfer_operation,
+            transfer_to_blind_operation,
+            transfer_from_blind_operation,
+            blind_transfer_operation
          > operation;
 
    /// @} // operations group

@@ -77,7 +77,8 @@ namespace graphene { namespace chain {
       override_authority   = 0x04, /**< @todo issuer may transfer asset back to himself */
       transfer_restricted  = 0x08, /**< require the issuer to be one party to every transfer */
       disable_force_settle = 0x10, /**< disable force settling */
-      global_settle        = 0x20  /**< allow the bitasset issuer to force a global settling -- this may be set in permissions, but not flags */
+      global_settle        = 0x20, /**< allow the bitasset issuer to force a global settling -- this may be set in permissions, but not flags */
+      disable_confidential = 0x40  /**< allow the issuer to disable this assets use in confidential / blinded balances */
    };
    const static uint32_t ASSET_ISSUER_PERMISSION_MASK = charge_market_fee|white_list|override_authority|transfer_restricted|disable_force_settle|global_settle;
    const static uint32_t UIA_ASSET_ISSUER_PERMISSION_MASK = charge_market_fee|white_list|override_authority|transfer_restricted;
@@ -116,6 +117,7 @@ namespace graphene { namespace chain {
       vesting_balance_object_type,
       worker_object_type,
       balance_object_type,
+      blinded_balance_object_type,
       OBJECT_TYPE_COUNT ///< Sentry value which contains the number of different object types
    };
 
@@ -160,6 +162,7 @@ namespace graphene { namespace chain {
    class witness_schedule_object;
    class worker_object;
    class balance_object;
+   class blinded_balance_object;
 
    typedef object_id< protocol_ids, account_object_type,            account_object>               account_id_type;
    typedef object_id< protocol_ids, asset_object_type,              asset_object>                 asset_id_type;
@@ -175,6 +178,7 @@ namespace graphene { namespace chain {
    typedef object_id< protocol_ids, vesting_balance_object_type,    vesting_balance_object>       vesting_balance_id_type;
    typedef object_id< protocol_ids, worker_object_type,             worker_object>                worker_id_type;
    typedef object_id< protocol_ids, balance_object_type,            balance_object>               balance_id_type;
+   typedef object_id< protocol_ids, blinded_balance_object_type,    blinded_balance_object>       blinded_balance_id_type;
 
    // implementation types
    class global_property_object;
@@ -519,6 +523,7 @@ FC_REFLECT_ENUM( graphene::chain::object_type,
                  (vesting_balance_object_type)
                  (worker_object_type)
                  (balance_object_type)
+                 (blinded_balance_object_type)
                  (OBJECT_TYPE_COUNT)
                )
 FC_REFLECT_ENUM( graphene::chain::impl_object_type,
@@ -649,4 +654,4 @@ FC_REFLECT_TYPENAME( graphene::chain::block_summary_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::account_transaction_history_id_type )
 FC_REFLECT_TYPENAME( graphene::chain::witness_schedule_id_type )
 
-FC_REFLECT_ENUM( graphene::chain::asset_issuer_permission_flags, (charge_market_fee)(white_list)(transfer_restricted)(override_authority)(disable_force_settle)(global_settle) )
+FC_REFLECT_ENUM( graphene::chain::asset_issuer_permission_flags, (charge_market_fee)(white_list)(transfer_restricted)(override_authority)(disable_force_settle)(global_settle)(disable_confidential) )

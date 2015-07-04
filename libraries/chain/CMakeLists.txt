@@ -11,6 +11,7 @@ add_library( graphene_chain
              predicate.cpp
 
              operations.cpp
+             confidential.cpp
 
              evaluator.cpp
              global_parameters_evaluator.cpp

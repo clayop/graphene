@@ -74,14 +74,17 @@ public:
    template<typename T>
    void operator()(const T& op)const
    {
-      balance_accumulator acc;
-      op.get_balance_delta( acc, result );
       string op_name = fc::get_typename<T>::name();
       if( op_name.find_last_of(':') != string::npos )
          op_name.erase(0, op_name.find_last_of(':')+1);
       out << op_name <<" ";
+
+      /*
+      balance_accumulator acc;
+      op.get_balance_delta( acc, result );
       out << "balance delta: " << fc::json::to_string(acc.balance) <<"   ";
       out << fc::json::to_string(op.fee_payer()) << "  fee: " << fc::json::to_string(op.fee);
+      */
    }
    void operator()(const transfer_operation& op)const;
    void operator()(const account_create_operation& op)const;

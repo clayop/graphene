@@ -84,6 +84,12 @@ namespace graphene { namespace chain {
       flat_map<public_key_type,weight_type> key_auths;
       /** needed for backward compatibility only */
       flat_map<address,weight_type>         address_auths;
+
+      friend bool operator==(const authority& a, const authority& b )
+      {
+         return std::tie(a.weight_threshold,a.account_auths,a.key_auths,a.address_auths) ==
+                std::tie(b.weight_threshold,b.account_auths,b.key_auths,b.address_auths);
+      }
    };
 
 } } // namespace graphene::chain
